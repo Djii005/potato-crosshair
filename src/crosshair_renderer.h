@@ -7,7 +7,7 @@
 
 namespace potato
 {
-COLORREF GetEffectiveReticleColor(const Settings& settings);
+COLORREF GetCrosshairColor(const Settings& settings);
 int CalculateOverlayWindowSize(const Settings& settings);
-void DrawReticle(Gdiplus::Graphics& graphics, const Settings& settings, const Gdiplus::RectF& bounds);
+void DrawCrosshair(Gdiplus::Graphics& graphics, const Settings& settings, const Gdiplus::RectF& bounds);
 } // namespace potato

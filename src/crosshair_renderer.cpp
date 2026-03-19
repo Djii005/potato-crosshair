@@ -67,9 +67,9 @@ bool TryDrawCustomImage(Graphics& graphics, const Settings& settings, const Rect
     return true;
 }
 
-void DrawBuiltInReticle(Graphics& graphics, const Settings& settings, const RectF& bounds)
+void DrawBuiltInCrosshair(Graphics& graphics, const Settings& settings, const RectF& bounds)
 {
-    const COLORREF effectiveColor = GetEffectiveReticleColor(settings);
+    const COLORREF effectiveColor = GetCrosshairColor(settings);
     const BYTE alpha = static_cast<BYTE>(ClampInt(settings.opacity, 40, 255));
     const float centerX = bounds.X + bounds.Width / 2.0F;
     const float centerY = bounds.Y + bounds.Height / 2.0F;
@@ -127,7 +127,7 @@ void DrawBuiltInReticle(Graphics& graphics, const Settings& settings, const Rect
 }
 } // namespace
 
-COLORREF GetEffectiveReticleColor(const Settings& settings)
+COLORREF GetCrosshairColor(const Settings& settings)
 {
     if (settings.useCustomColor)
     {
@@ -151,13 +151,13 @@ int CalculateOverlayWindowSize(const Settings& settings)
     return std::max(96, (maxExtent * 2) + 24);
 }
 
-void DrawReticle(Graphics& graphics, const Settings& settings, const RectF& bounds)
+void DrawCrosshair(Graphics& graphics, const Settings& settings, const RectF& bounds)
 {
     if (TryDrawCustomImage(graphics, settings, bounds))
     {
         return;
     }
 
-    DrawBuiltInReticle(graphics, settings, bounds);
+    DrawBuiltInCrosshair(graphics, settings, bounds);
 }
 } // namespace potato

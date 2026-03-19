@@ -41,7 +41,7 @@ std::wstring FileLabelText(const Settings& settings)
 {
     if (settings.customImagePath.empty())
     {
-        return L"No PNG imported. Import a transparent PNG to use image mode.";
+        return L"No PNG loaded.";
     }
 
     std::wstring filename = settings.customImagePath;
@@ -51,7 +51,7 @@ std::wstring FileLabelText(const Settings& settings)
         filename = filename.substr(slashIndex + 1);
     }
 
-    return L"Imported PNG: " + filename;
+    return L"PNG file: " + filename;
 }
 
 RECT InflateRectCopy(RECT rect, const int amount)
@@ -249,7 +249,7 @@ void MainWindow::ApplySettings(const Settings& settings)
 
     UpdateSliderLabels(settings);
     UpdateImageStatus(settings);
-    SetWindowTextW(generalStorageLabel_, (L"Settings location\r\n" + app_->settingsPath()).c_str());
+    SetWindowTextW(generalStorageLabel_, (L"Settings path\r\n" + app_->settingsPath()).c_str());
 
     const bool hasImage = !settings.customImagePath.empty();
     EnableWindow(enableCustomImageCheck_, hasImage ? TRUE : FALSE);
@@ -406,7 +406,7 @@ void MainWindow::CreateControls()
     sectionButtons_[4] = CreateWindowExW(0, L"BUTTON", L"About", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_SECTION_ABOUT), instance_, nullptr);
 
     generalVisibleCheck_ = CreateWindowExW(0, L"BUTTON", L"Overlay enabled", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GENERAL_VISIBLE), instance_, nullptr);
-    generalSummaryLabel_ = CreateWindowExW(0, L"STATIC", L"Potato Crosshair launches with the settings window open and a tray icon active.\r\nMinimize and close both hide this window to tray.\r\nLeft-click the tray icon to reopen settings; right-click for quick actions.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    generalSummaryLabel_ = CreateWindowExW(0, L"STATIC", L"The settings window opens when the app starts.\r\nMinimize and close both send it to the tray.\r\nLeft-click the tray icon to open it again.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     generalStorageLabel_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     previewControl_ = CreateWindowExW(0, kPreviewWindowClass, nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_PREVIEW_CONTROL), instance_, this);
@@ -439,7 +439,7 @@ void MainWindow::CreateControls()
     pickColorButton_ = CreateWindowExW(0, L"BUTTON", L"Choose Color", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_PICK_COLOR_BUTTON), instance_, nullptr);
     customColorSwatch_ = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_CUSTOM_COLOR_SWATCH), instance_, nullptr);
 
-    enableCustomImageCheck_ = CreateWindowExW(0, L"BUTTON", L"Use imported PNG as the active reticle", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_ENABLE_CUSTOM_IMAGE), instance_, nullptr);
+    enableCustomImageCheck_ = CreateWindowExW(0, L"BUTTON", L"Use PNG crosshair", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_ENABLE_CUSTOM_IMAGE), instance_, nullptr);
     importImageButton_ = CreateWindowExW(0, L"BUTTON", L"Import PNG", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMPORT_IMAGE), instance_, nullptr);
     clearImageButton_ = CreateWindowExW(0, L"BUTTON", L"Clear PNG", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_CLEAR_IMAGE), instance_, nullptr);
     imageStatusLabel_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
@@ -448,7 +448,7 @@ void MainWindow::CreateControls()
     imageSizeValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     hotkeysText_ = CreateWindowExW(0, L"STATIC", L"F8  Toggle overlay\r\nF9  Cycle built-in style\r\nCtrl + Alt + C  Cycle preset color\r\nCtrl + Alt + Up / Down  Length\r\nCtrl + Alt + Left / Right  Gap\r\nCtrl + Alt + PageUp / PageDown  Thickness\r\nCtrl + Alt + Home / End  Opacity\r\nCtrl + Alt + R  Reset defaults\r\nCtrl + Alt + Q  Quit", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
-    aboutText_ = CreateWindowExW(0, L"STATIC", L"Potato Crosshair\r\nA desktop crosshair overlay with a tray-first workflow, potato-toned shell, built-in reticles, free custom color support, and imported PNG reticles.\r\n\r\nPrimary monitor targeting is preserved from the current MVP.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    aboutText_ = CreateWindowExW(0, L"STATIC", L"Potato Crosshair\r\nA simple crosshair overlay for Windows.\r\nIt has built-in crosshairs, custom colors, PNG support, and a tray icon.\r\n\r\nIt still uses the main monitor only.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     for (const HWND control : sectionButtons_)
     {
@@ -635,7 +635,7 @@ void MainWindow::PaintWindow()
     TextOutW(dc, 28, 22, L"Potato Crosshair", 17);
     SelectObject(dc, smallFont_);
     SetTextColor(dc, kThemeMutedText);
-    TextOutW(dc, 30, 50, L"Overlay control center", 22);
+    TextOutW(dc, 30, 50, L"Settings", 8);
     SelectObject(dc, bodyFont_);
     SetTextColor(dc, kThemeText);
     TextOutW(dc, 24, kHeaderHeight + 10, L"Sections", 8);
@@ -683,7 +683,7 @@ void MainWindow::PaintPreview(const HWND preview) const
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     const RECT inner = InflateRectCopy(clientRect, -18);
-    DrawReticle(graphics, app_->settings(), Gdiplus::RectF(static_cast<float>(inner.left), static_cast<float>(inner.top), static_cast<float>(inner.right - inner.left), static_cast<float>(inner.bottom - inner.top)));
+    DrawCrosshair(graphics, app_->settings(), Gdiplus::RectF(static_cast<float>(inner.left), static_cast<float>(inner.top), static_cast<float>(inner.right - inner.left), static_cast<float>(inner.bottom - inner.top)));
 
     EndPaint(preview, &paint);
 }

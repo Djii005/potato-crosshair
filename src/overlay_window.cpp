@@ -343,7 +343,7 @@ void OverlayWindow::Render() const
 
         if (settings_.visible)
         {
-            DrawReticle(graphics, settings_, Gdiplus::RectF(0.0F, 0.0F, static_cast<float>(width), static_cast<float>(height)));
+            DrawCrosshair(graphics, settings_, Gdiplus::RectF(0.0F, 0.0F, static_cast<float>(width), static_cast<float>(height)));
         }
     }
 

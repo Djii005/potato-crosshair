@@ -1,39 +1,41 @@
 # PotatoCrosshair
 
-`PotatoCrosshair` is a Windows crosshair overlay written in C++ with a native desktop control panel, system tray integration, and a potato-themed UI shell. It follows the basic overlay pattern used by apps like Crosshair X: a transparent, click-through, always-on-top window with a configurable reticle.
+PotatoCrosshair is a crosshair overlay for Windows made in C++.
 
-This repository now includes:
+I made it for a battle royale game, but it can also be used in other games.
 
-- transparent Win32 overlay with built-in reticle styles
-- potato-themed native settings window with live preview
-- system tray icon with open, toggle, and quit actions
-- preset palette and free custom color picker
-- imported transparent PNG reticles
-- global hotkeys for size, gap, thickness, opacity, and quick toggle
-- persistent settings stored in `%LocalAppData%\PotatoCrosshair\settings.ini`
+Main features:
+
+- transparent overlay
+- settings window
+- tray icon
+- built-in crosshair styles
+- custom colors
+- PNG crosshair support
+- saved settings in `%LocalAppData%\PotatoCrosshair\settings.ini`
 
 ## Hotkeys
 
-- `F8`: toggle the crosshair on or off
-- `F9`: cycle reticle style (`Cross`, `Dot`, `Circle`, `T-Shape`)
+- `F8`: show or hide the crosshair
+- `F9`: change the style (`Cross`, `Dot`, `Circle`, `T-Shape`)
 - `Ctrl` + `Alt` + `C`: cycle color preset
-- `Ctrl` + `Alt` + `Up` / `Down`: increase or decrease line length
-- `Ctrl` + `Alt` + `Left` / `Right`: decrease or increase center gap
-- `Ctrl` + `Alt` + `PageUp` / `PageDown`: increase or decrease thickness
-- `Ctrl` + `Alt` + `Home` / `End`: increase or decrease opacity
-- `Ctrl` + `Alt` + `R`: reset built-in settings to defaults
+- `Ctrl` + `Alt` + `Up` / `Down`: change line length
+- `Ctrl` + `Alt` + `Left` / `Right`: change the center gap
+- `Ctrl` + `Alt` + `PageUp` / `PageDown`: change thickness
+- `Ctrl` + `Alt` + `Home` / `End`: change opacity
+- `Ctrl` + `Alt` + `R`: reset the built-in settings
 - `Ctrl` + `Alt` + `Q`: quit the app
 
 ## Desktop UI
 
-- launch opens the settings window and creates the tray icon
-- minimize and close both hide the window to tray
-- left-click the tray icon reopens the settings window
-- right-click the tray icon opens a menu for `Open Settings`, `Show/Hide Overlay`, and `Quit`
+- the settings window opens when the app starts
+- minimize and close both send the window to the tray
+- left-click the tray icon opens the settings window
+- right-click the tray icon shows `Open Settings`, `Show/Hide Overlay`, and `Quit`
 
 ## Build
 
-Use Visual Studio Build Tools or Visual Studio with the C++ desktop workload installed.
+Use Visual Studio Build Tools or Visual Studio with the C++ desktop workload.
 
 From a Visual Studio Developer Command Prompt or Developer PowerShell:
 
@@ -42,14 +44,14 @@ cmake -S . -B build -G "NMake Makefiles"
 cmake --build build
 ```
 
-The executable will be generated at:
+The app will be built here:
 
 `build/PotatoCrosshair.exe`
 
-On first launch the app creates:
+On first run the app creates:
 
 - `%LocalAppData%\PotatoCrosshair\settings.ini`
-- `%LocalAppData%\PotatoCrosshair\assets\custom-reticle.png` when a PNG is imported
+- `%LocalAppData%\PotatoCrosshair\assets\custom-reticle.png` when you import a PNG
 
 If you prefer a Visual Studio solution instead, use:
 
@@ -60,15 +62,15 @@ cmake --build build-vs --config Release
 
 ## Notes
 
-- The overlay still centers itself on the primary monitor.
-- Most overlays only work reliably with windowed or borderless-fullscreen games. Exclusive fullscreen often bypasses the desktop compositor.
-- Anti-cheat protected games can reject or behave unpredictably with overlays. Test carefully.
+- The overlay is still centered on the main monitor.
+- It works best in windowed or borderless fullscreen games.
+- Some anti-cheat games may block overlays.
 
 ## Next steps
 
-If you want to turn this into a fuller product, the next useful additions are:
+Possible next steps:
 
 - per-monitor targeting
-- custom reticle editor and richer PNG controls
+- custom crosshair editor and better PNG controls
 - profiles and per-game settings
 - Direct2D/DirectComposition rendering for richer visuals
