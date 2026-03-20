@@ -7,6 +7,7 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <gdiplus.h>
 #include <windowsx.h>
 
@@ -19,10 +20,27 @@ namespace
 {
 constexpr int kWindowWidth = 980;
 constexpr int kWindowHeight = 680;
+constexpr int kWindowMinWidth = 900;
+constexpr int kWindowMinHeight = 680;
 constexpr int kHeaderHeight = 78;
 constexpr int kSidebarWidth = 190;
 constexpr int kSidebarButtonHeight = 42;
 constexpr int kSidebarGap = 10;
+constexpr int kContentGap = 20;
+constexpr int kResizeBorder = 8;
+constexpr int kWindowCornerRadius = 20;
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
+#endif
 
 RECT MakeRect(const int left, const int top, const int width, const int height)
 {
@@ -178,7 +196,7 @@ bool MainWindow::Create(const HINSTANCE instance)
         WS_EX_APPWINDOW,
         kAppWindowClass,
         kAppName,
-        WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPSIBLINGS,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         kWindowWidth,
@@ -195,6 +213,8 @@ bool MainWindow::Create(const HINSTANCE instance)
 
     SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON))));
     SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON))));
+    ApplyWindowFrame();
+    UpdateWindowRegion(kWindowWidth, kWindowHeight);
 
     CreateControls();
     LayoutChildren(kWindowWidth, kWindowHeight);
@@ -213,12 +233,14 @@ void MainWindow::Destroy()
 
 void MainWindow::Show(const int)
 {
+    CenterWindow();
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
 }
 
 void MainWindow::ShowAndFocus()
 {
+    CenterWindow();
     ShowWindow(hwnd_, SW_SHOW);
     ShowWindow(hwnd_, SW_RESTORE);
     SetForegroundWindow(hwnd_);
@@ -334,7 +356,7 @@ LRESULT MainWindow::HandleMessage(const UINT message, const WPARAM wParam, const
         const HDC dc = reinterpret_cast<HDC>(wParam);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, kThemeText);
-        return reinterpret_cast<LRESULT>(panelBrush_);
+        return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
     }
 
     case WM_CTLCOLORLISTBOX:
@@ -351,6 +373,77 @@ LRESULT MainWindow::HandleMessage(const UINT message, const WPARAM wParam, const
 
     case WM_ERASEBKGND:
         return 1;
+
+    case WM_NCCALCSIZE:
+        return wParam != FALSE ? 0 : DefWindowProcW(hwnd_, message, wParam, lParam);
+
+    case WM_NCPAINT:
+        return 0;
+
+    case WM_NCACTIVATE:
+        return TRUE;
+
+    case WM_GETMINMAXINFO:
+    {
+        auto* minMaxInfo = reinterpret_cast<MINMAXINFO*>(lParam);
+        minMaxInfo->ptMinTrackSize.x = kWindowMinWidth;
+        minMaxInfo->ptMinTrackSize.y = kWindowMinHeight;
+        return 0;
+    }
+
+    case WM_NCHITTEST:
+    {
+        POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        RECT windowRect{};
+        GetWindowRect(hwnd_, &windowRect);
+
+        const bool left = screenPoint.x >= windowRect.left && screenPoint.x < windowRect.left + kResizeBorder;
+        const bool right = screenPoint.x < windowRect.right && screenPoint.x >= windowRect.right - kResizeBorder;
+        const bool top = screenPoint.y >= windowRect.top && screenPoint.y < windowRect.top + kResizeBorder;
+        const bool bottom = screenPoint.y < windowRect.bottom && screenPoint.y >= windowRect.bottom - kResizeBorder;
+
+        if (top && left)
+        {
+            return HTTOPLEFT;
+        }
+        if (top && right)
+        {
+            return HTTOPRIGHT;
+        }
+        if (bottom && left)
+        {
+            return HTBOTTOMLEFT;
+        }
+        if (bottom && right)
+        {
+            return HTBOTTOMRIGHT;
+        }
+        if (left)
+        {
+            return HTLEFT;
+        }
+        if (right)
+        {
+            return HTRIGHT;
+        }
+        if (top)
+        {
+            return HTTOP;
+        }
+        if (bottom)
+        {
+            return HTBOTTOM;
+        }
+
+        POINT clientPoint = screenPoint;
+        ScreenToClient(hwnd_, &clientPoint);
+        if (IsHeaderPoint(clientPoint))
+        {
+            return HTCAPTION;
+        }
+
+        return HTCLIENT;
+    }
 
     case WM_LBUTTONDOWN:
     {
@@ -370,6 +463,7 @@ LRESULT MainWindow::HandleMessage(const UINT message, const WPARAM wParam, const
             return 0;
         }
 
+        UpdateWindowRegion(LOWORD(lParam), HIWORD(lParam));
         LayoutChildren(LOWORD(lParam), HIWORD(lParam));
         return 0;
 
@@ -416,14 +510,19 @@ void MainWindow::CreateControls()
     SendMessageW(styleCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Circle"));
     SendMessageW(styleCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"T-Shape"));
 
-    lengthSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_LENGTH_SLIDER), instance_, nullptr);
-    gapSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GAP_SLIDER), instance_, nullptr);
-    thicknessSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_THICKNESS_SLIDER), instance_, nullptr);
-    opacitySlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_OPACITY_SLIDER), instance_, nullptr);
+    constexpr DWORD kSliderStyle = WS_CHILD | WS_VISIBLE | TBS_NOTICKS | TBS_TRANSPARENTBKGND;
+    lengthSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_LENGTH_SLIDER), instance_, nullptr);
+    gapSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GAP_SLIDER), instance_, nullptr);
+    thicknessSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_THICKNESS_SLIDER), instance_, nullptr);
+    opacitySlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_OPACITY_SLIDER), instance_, nullptr);
     SendMessageW(lengthSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(4, 120));
     SendMessageW(gapSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 80));
     SendMessageW(thicknessSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(1, 20));
     SendMessageW(opacitySlider_, TBM_SETRANGE, TRUE, MAKELPARAM(40, 255));
+    SendMessageW(lengthSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
+    SendMessageW(gapSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
+    SendMessageW(thicknessSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
+    SendMessageW(opacitySlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
 
     lengthValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     gapValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
@@ -443,8 +542,9 @@ void MainWindow::CreateControls()
     importImageButton_ = CreateWindowExW(0, L"BUTTON", L"Import PNG", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMPORT_IMAGE), instance_, nullptr);
     clearImageButton_ = CreateWindowExW(0, L"BUTTON", L"Clear PNG", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_CLEAR_IMAGE), instance_, nullptr);
     imageStatusLabel_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
-    imageSizeSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMAGE_SIZE_SLIDER), instance_, nullptr);
+    imageSizeSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMAGE_SIZE_SLIDER), instance_, nullptr);
     SendMessageW(imageSizeSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(16, 512));
+    SendMessageW(imageSizeSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
     imageSizeValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     hotkeysText_ = CreateWindowExW(0, L"STATIC", L"F8  Toggle overlay\r\nF9  Cycle built-in style\r\nCtrl + Alt + C  Cycle preset color\r\nCtrl + Alt + Up / Down  Length\r\nCtrl + Alt + Left / Right  Gap\r\nCtrl + Alt + PageUp / PageDown  Thickness\r\nCtrl + Alt + Home / End  Opacity\r\nCtrl + Alt + R  Reset defaults\r\nCtrl + Alt + Q  Quit", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
@@ -502,57 +602,123 @@ void MainWindow::CreateControls()
     RegisterSectionControl(aboutText_, AppSection::About);
 }
 
-void MainWindow::LayoutChildren(const int width, const int)
+void MainWindow::LayoutChildren(const int width, const int height)
 {
+    if (width <= 0 || height <= 0)
+    {
+        return;
+    }
+
+    constexpr UINT kLayoutFlags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOREDRAW;
     const int sidebarTop = kHeaderHeight + 24;
     const int contentLeft = kSidebarWidth + 30;
     const int contentWidth = width - contentLeft - 24;
+    const int cardLeft = contentLeft + 12;
+    const int contentTop = 130;
+    const int sectionHeight = std::max(420, height - contentTop - 24);
+    const int availableWidth = contentWidth - 24;
+    HDWP deferred = BeginDeferWindowPos(40);
 
-    MoveWindow(headerMinimizeButton_, width - 104, 20, 36, 32, TRUE);
-    MoveWindow(headerCloseButton_, width - 60, 20, 36, 32, TRUE);
+    auto placeControl = [&](const HWND control, const int x, const int y, const int controlWidth, const int controlHeight)
+    {
+        if (control == nullptr)
+        {
+            return;
+        }
 
-    int sectionTop = sidebarTop;
+        if (deferred != nullptr)
+        {
+            deferred = DeferWindowPos(deferred, control, nullptr, x, y, controlWidth, controlHeight, kLayoutFlags);
+        }
+        else
+        {
+            SetWindowPos(control, nullptr, x, y, controlWidth, controlHeight, kLayoutFlags);
+        }
+    };
+
+    placeControl(headerMinimizeButton_, width - 104, 20, 36, 32);
+    placeControl(headerCloseButton_, width - 60, 20, 36, 32);
+
+    int sidebarY = sidebarTop;
     for (const HWND button : sectionButtons_)
     {
-        MoveWindow(button, 18, sectionTop, kSidebarWidth - 36, kSidebarButtonHeight, TRUE);
-        sectionTop += kSidebarButtonHeight + kSidebarGap;
+        placeControl(button, 18, sidebarY, kSidebarWidth - 36, kSidebarButtonHeight);
+        sidebarY += kSidebarButtonHeight + kSidebarGap;
     }
 
-    MoveWindow(generalVisibleCheck_, contentLeft + 24, 160, 220, 28, TRUE);
-    MoveWindow(generalSummaryLabel_, contentLeft + 24, 210, contentWidth - 48, 100, TRUE);
-    MoveWindow(generalStorageLabel_, contentLeft + 24, 338, contentWidth - 48, 80, TRUE);
+    placeControl(generalVisibleCheck_, cardLeft + 24, contentTop + 28, 220, 28);
+    placeControl(generalSummaryLabel_, cardLeft + 24, contentTop + 78, availableWidth - 48, 100);
+    placeControl(generalStorageLabel_, cardLeft + 24, contentTop + 206, availableWidth - 48, 80);
 
-    MoveWindow(previewControl_, contentLeft + 24, 156, 280, 280, TRUE);
-    MoveWindow(styleCombo_, contentLeft + 356, 176, 220, 300, TRUE);
-    MoveWindow(lengthSlider_, contentLeft + 356, 240, 240, 32, TRUE);
-    MoveWindow(lengthValue_, contentLeft + 612, 236, 180, 24, TRUE);
-    MoveWindow(gapSlider_, contentLeft + 356, 294, 240, 32, TRUE);
-    MoveWindow(gapValue_, contentLeft + 612, 290, 180, 24, TRUE);
-    MoveWindow(thicknessSlider_, contentLeft + 356, 348, 240, 32, TRUE);
-    MoveWindow(thicknessValue_, contentLeft + 612, 344, 180, 24, TRUE);
-    MoveWindow(opacitySlider_, contentLeft + 356, 402, 240, 32, TRUE);
-    MoveWindow(opacityValue_, contentLeft + 612, 398, 180, 24, TRUE);
+    const bool stackedCrosshairLayout = availableWidth < 620;
+    const int previewCardWidth = stackedCrosshairLayout ? availableWidth : std::min(340, std::max(280, (availableWidth / 2) - 30));
+    const int controlsCardWidth = stackedCrosshairLayout ? availableWidth : availableWidth - previewCardWidth - kContentGap;
+    const int previewCardHeight = stackedCrosshairLayout ? 290 : sectionHeight;
+    const int controlsCardTop = stackedCrosshairLayout ? contentTop + previewCardHeight + kContentGap : contentTop;
+    const int previewLeft = cardLeft;
+    const int controlsLeft = stackedCrosshairLayout ? cardLeft : previewLeft + previewCardWidth + kContentGap;
+    const int previewSize = std::max(180, std::min(previewCardWidth - 52, previewCardHeight - 52));
+    const int previewTop = contentTop + (previewCardHeight - previewSize) / 2;
+    const int previewInnerLeft = previewLeft + (previewCardWidth - previewSize) / 2;
 
-    int swatchLeft = contentLeft + 356;
+    placeControl(previewControl_, previewInnerLeft, previewTop, previewSize, previewSize);
+
+    const int controlsInnerLeft = controlsLeft + 24;
+    const int controlsInnerWidth = controlsCardWidth - 48;
+    int y = controlsCardTop + 26;
+    placeControl(styleCombo_, controlsInnerLeft, y, controlsInnerWidth, 300);
+    y += 52;
+
+    const int sliderHeight = 32;
+    const int labelHeight = 24;
+    const int groupGap = 14;
+    placeControl(lengthValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
+    y += labelHeight;
+    placeControl(lengthSlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
+    y += sliderHeight + groupGap;
+    placeControl(gapValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
+    y += labelHeight;
+    placeControl(gapSlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
+    y += sliderHeight + groupGap;
+    placeControl(thicknessValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
+    y += labelHeight;
+    placeControl(thicknessSlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
+    y += sliderHeight + groupGap;
+    placeControl(opacityValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
+    y += labelHeight;
+    placeControl(opacitySlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
+    y += sliderHeight + 18;
+
+    int swatchLeft = controlsInnerLeft;
     for (const HWND swatch : swatchButtons_)
     {
-        MoveWindow(swatch, swatchLeft, 462, 30, 30, TRUE);
+        placeControl(swatch, swatchLeft, y, 30, 30);
         swatchLeft += 42;
     }
+    y += 46;
 
-    MoveWindow(useCustomColorCheck_, contentLeft + 356, 512, 180, 24, TRUE);
-    MoveWindow(pickColorButton_, contentLeft + 356, 548, 150, 38, TRUE);
-    MoveWindow(customColorSwatch_, contentLeft + 520, 548, 38, 38, TRUE);
+    placeControl(useCustomColorCheck_, controlsInnerLeft, y, controlsInnerWidth, 24);
+    y += 36;
+    const int pickColorButtonWidth = std::max(120, std::min(170, controlsInnerWidth - 52));
+    placeControl(pickColorButton_, controlsInnerLeft, y, pickColorButtonWidth, 38);
+    placeControl(customColorSwatch_, controlsInnerLeft + pickColorButtonWidth + 12, y, 38, 38);
 
-    MoveWindow(enableCustomImageCheck_, contentLeft + 24, 160, contentWidth - 48, 28, TRUE);
-    MoveWindow(importImageButton_, contentLeft + 24, 220, 136, 40, TRUE);
-    MoveWindow(clearImageButton_, contentLeft + 174, 220, 136, 40, TRUE);
-    MoveWindow(imageStatusLabel_, contentLeft + 24, 290, contentWidth - 48, 40, TRUE);
-    MoveWindow(imageSizeSlider_, contentLeft + 24, 370, 260, 32, TRUE);
-    MoveWindow(imageSizeValue_, contentLeft + 300, 366, 220, 24, TRUE);
+    placeControl(enableCustomImageCheck_, cardLeft + 24, contentTop + 28, availableWidth - 48, 28);
+    placeControl(importImageButton_, cardLeft + 24, contentTop + 88, 136, 40);
+    placeControl(clearImageButton_, cardLeft + 174, contentTop + 88, 136, 40);
+    placeControl(imageStatusLabel_, cardLeft + 24, contentTop + 154, availableWidth - 48, 40);
+    placeControl(imageSizeValue_, cardLeft + 24, contentTop + 218, availableWidth - 48, 24);
+    placeControl(imageSizeSlider_, cardLeft + 24, contentTop + 248, availableWidth - 48, 32);
 
-    MoveWindow(hotkeysText_, contentLeft + 28, 160, contentWidth - 56, 280, TRUE);
-    MoveWindow(aboutText_, contentLeft + 28, 160, contentWidth - 56, 220, TRUE);
+    placeControl(hotkeysText_, cardLeft + 28, contentTop + 28, availableWidth - 56, sectionHeight - 56);
+    placeControl(aboutText_, cardLeft + 28, contentTop + 28, availableWidth - 56, sectionHeight - 56);
+
+    if (deferred != nullptr)
+    {
+        EndDeferWindowPos(deferred);
+    }
+
+    RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
 }
 
 void MainWindow::RegisterSectionControl(const HWND handle, const AppSection section)
@@ -615,49 +781,76 @@ void MainWindow::PaintWindow()
 
     RECT clientRect{};
     GetClientRect(hwnd_, &clientRect);
-    FillRect(dc, &clientRect, windowBrush_);
+    const int clientWidth = clientRect.right - clientRect.left;
+    const int clientHeight = clientRect.bottom - clientRect.top;
+    if (clientWidth <= 0 || clientHeight <= 0)
+    {
+        EndPaint(hwnd_, &paint);
+        return;
+    }
+
+    const HDC bufferDc = CreateCompatibleDC(dc);
+    const HBITMAP bufferBitmap = CreateCompatibleBitmap(dc, clientWidth, clientHeight);
+    const HGDIOBJ previousBitmap = SelectObject(bufferDc, bufferBitmap);
+    FillRect(bufferDc, &clientRect, windowBrush_);
 
     const RECT headerRect = MakeRect(0, 0, clientRect.right, kHeaderHeight);
     const RECT sidebarRect = MakeRect(0, kHeaderHeight, kSidebarWidth, clientRect.bottom - kHeaderHeight);
     const RECT contentRect = MakeRect(kSidebarWidth + 6, kHeaderHeight + 8, clientRect.right - kSidebarWidth - 18, clientRect.bottom - kHeaderHeight - 16);
+    const int cardLeft = contentRect.left + 12;
+    const int sectionTop = 130;
+    const int sectionHeight = std::max(420, static_cast<int>(clientRect.bottom) - sectionTop - 24);
+    const int availableWidth = (contentRect.right - contentRect.left) - 24;
 
     HBRUSH headerBrush = CreateSolidBrush(kThemePanelSecondary);
-    FillRect(dc, &headerRect, headerBrush);
+    FillRect(bufferDc, &headerRect, headerBrush);
     DeleteObject(headerBrush);
 
     HBRUSH sidebarBrush = CreateSolidBrush(kThemePanelBackground);
-    FillRect(dc, &sidebarRect, sidebarBrush);
+    FillRect(bufferDc, &sidebarRect, sidebarBrush);
     DeleteObject(sidebarBrush);
 
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, kThemeText);
-    SelectObject(dc, titleFont_);
-    TextOutW(dc, 28, 22, L"Potato Crosshair", 17);
-    SelectObject(dc, smallFont_);
-    SetTextColor(dc, kThemeMutedText);
-    TextOutW(dc, 30, 50, L"Settings", 8);
-    SelectObject(dc, bodyFont_);
-    SetTextColor(dc, kThemeText);
-    TextOutW(dc, 24, kHeaderHeight + 10, L"Sections", 8);
+    SetBkMode(bufferDc, TRANSPARENT);
+    SetTextColor(bufferDc, kThemeText);
+    SelectObject(bufferDc, titleFont_);
+    TextOutW(bufferDc, 28, 22, L"Potato Crosshair", 17);
+    SelectObject(bufferDc, smallFont_);
+    SetTextColor(bufferDc, kThemeMutedText);
+    TextOutW(bufferDc, 30, 50, L"Settings", 8);
+    SelectObject(bufferDc, bodyFont_);
+    SetTextColor(bufferDc, kThemeText);
+    TextOutW(bufferDc, 24, kHeaderHeight + 10, L"Sections", 8);
 
-    SetTextColor(dc, kThemeAccentHover);
+    SetTextColor(bufferDc, kThemeAccentHover);
     const wchar_t* currentSection = SectionTitle(activeSection_);
-    TextOutW(dc, contentRect.left + 18, kHeaderHeight + 18, currentSection, static_cast<int>(wcslen(currentSection)));
+    TextOutW(bufferDc, contentRect.left + 18, kHeaderHeight + 18, currentSection, static_cast<int>(wcslen(currentSection)));
 
     if (activeSection_ == AppSection::General)
     {
-        DrawCard(dc, MakeRect(contentRect.left + 12, 130, contentRect.right - 24, 320));
+        DrawCard(bufferDc, MakeRect(cardLeft, sectionTop, availableWidth, sectionHeight));
     }
     else if (activeSection_ == AppSection::Crosshair)
     {
-        DrawCard(dc, MakeRect(contentRect.left + 12, 130, 310, 320));
-        DrawCard(dc, MakeRect(contentRect.left + 344, 130, contentRect.right - 356, 480));
+        const bool stackedCrosshairLayout = availableWidth < 620;
+        const int previewCardWidth = stackedCrosshairLayout ? availableWidth : std::min(340, std::max(280, (availableWidth / 2) - 30));
+        const int controlsCardWidth = stackedCrosshairLayout ? availableWidth : availableWidth - previewCardWidth - kContentGap;
+        const int previewCardHeight = stackedCrosshairLayout ? 290 : sectionHeight;
+        const int controlsCardTop = stackedCrosshairLayout ? sectionTop + previewCardHeight + kContentGap : sectionTop;
+        const int controlsCardHeight = stackedCrosshairLayout ? sectionHeight - previewCardHeight - kContentGap : sectionHeight;
+        const int controlsLeft = stackedCrosshairLayout ? cardLeft : cardLeft + previewCardWidth + kContentGap;
+
+        DrawCard(bufferDc, MakeRect(cardLeft, sectionTop, previewCardWidth, previewCardHeight));
+        DrawCard(bufferDc, MakeRect(controlsLeft, controlsCardTop, controlsCardWidth, controlsCardHeight));
     }
     else
     {
-        DrawCard(dc, MakeRect(contentRect.left + 12, 130, contentRect.right - 24, 340));
+        DrawCard(bufferDc, MakeRect(cardLeft, sectionTop, availableWidth, sectionHeight));
     }
 
+    BitBlt(dc, 0, 0, clientWidth, clientHeight, bufferDc, 0, 0, SRCCOPY);
+    SelectObject(bufferDc, previousBitmap);
+    DeleteObject(bufferBitmap);
+    DeleteDC(bufferDc);
     EndPaint(hwnd_, &paint);
 }
 
@@ -954,6 +1147,65 @@ std::wstring MainWindow::OpenPngFileDialog() const
 Settings MainWindow::CopySettings() const
 {
     return app_->settings();
+}
+
+void MainWindow::ApplyWindowFrame()
+{
+    if (hwnd_ == nullptr)
+    {
+        return;
+    }
+
+    const BOOL useDarkMode = TRUE;
+    DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+    const auto cornerPreference = static_cast<DWM_WINDOW_CORNER_PREFERENCE>(DWMWCP_ROUND);
+    DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPreference, sizeof(cornerPreference));
+
+    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+}
+
+void MainWindow::UpdateWindowRegion(const int width, const int height)
+{
+    if (hwnd_ == nullptr || width <= 0 || height <= 0)
+    {
+        return;
+    }
+
+    if (IsZoomed(hwnd_) != FALSE)
+    {
+        SetWindowRgn(hwnd_, nullptr, TRUE);
+        return;
+    }
+
+    const HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, kWindowCornerRadius, kWindowCornerRadius);
+    SetWindowRgn(hwnd_, region, TRUE);
+}
+
+void MainWindow::CenterWindow()
+{
+    if (hwnd_ == nullptr || hasInitialPlacement_)
+    {
+        return;
+    }
+
+    RECT windowRect{};
+    GetWindowRect(hwnd_, &windowRect);
+
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    const HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY);
+    GetMonitorInfoW(monitor, &monitorInfo);
+
+    const int width = windowRect.right - windowRect.left;
+    const int height = windowRect.bottom - windowRect.top;
+    const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+    const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+    const int x = monitorInfo.rcWork.left + (workWidth - width) / 2;
+    const int y = monitorInfo.rcWork.top + (workHeight - height) / 2;
+
+    SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
+    hasInitialPlacement_ = true;
 }
 
 bool MainWindow::IsHeaderPoint(const POINT point) const

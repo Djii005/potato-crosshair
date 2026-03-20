@@ -54,6 +54,9 @@ private:
     void OpenImportDialog();
     std::wstring OpenPngFileDialog() const;
     Settings CopySettings() const;
+    void ApplyWindowFrame();
+    void UpdateWindowRegion(int width, int height);
+    void CenterWindow();
     bool IsHeaderPoint(POINT point) const;
     bool IsPointInControl(HWND control, POINT point) const;
     void HideInsteadOfClose();
@@ -63,6 +66,7 @@ private:
     HWND hwnd_ = nullptr;
     UINT taskbarCreatedMessage_ = 0;
     AppSection activeSection_ = AppSection::General;
+    bool hasInitialPlacement_ = false;
     bool updatingControls_ = false;
 
     HFONT titleFont_ = nullptr;

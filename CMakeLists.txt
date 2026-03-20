@@ -26,6 +26,7 @@ endif()
 target_link_libraries(PotatoCrosshair PRIVATE
     comctl32
     comdlg32
+    dwmapi
     gdiplus
     ole32
     shell32

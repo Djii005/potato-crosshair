@@ -18,7 +18,7 @@ bool TrayIcon::Create(const HWND owner, const HINSTANCE instance)
     created_ = Shell_NotifyIconW(NIM_ADD, &data_) != FALSE;
     if (created_)
     {
-        data_.uVersion = NOTIFYICON_VERSION_4;
+        data_.uVersion = NOTIFYICON_VERSION;
         Shell_NotifyIconW(NIM_SETVERSION, &data_);
     }
 
@@ -48,7 +48,7 @@ void TrayIcon::Recreate()
     }
 
     Shell_NotifyIconW(NIM_ADD, &data_);
-    data_.uVersion = NOTIFYICON_VERSION_4;
+    data_.uVersion = NOTIFYICON_VERSION;
     Shell_NotifyIconW(NIM_SETVERSION, &data_);
 }
 
