@@ -209,7 +209,7 @@ void OverlayWindow::HandleHotkey(const UINT hotkey)
         break;
 
     case kHotkeyStyle:
-        settings_.style = IntToStyle((StyleToInt(settings_.style) + 1) % 4);
+        SwitchStyleProfile(settings_, IntToStyle((StyleToInt(settings_.style) + 1) % kCrosshairStyleCount));
         requiresRelayout = true;
         break;
 

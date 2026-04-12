@@ -40,6 +40,11 @@ bool FileExists(const std::filesystem::path& path)
     std::error_code errorCode;
     return std::filesystem::exists(path, errorCode);
 }
+
+std::wstring StyleProfileKey(const CrosshairStyle style, const wchar_t* suffix)
+{
+    return L"style_" + std::to_wstring(StyleToInt(style)) + L"_" + suffix;
+}
 } // namespace
 
 bool SettingsStore::Initialize(const HINSTANCE instance)
@@ -72,9 +77,12 @@ Settings SettingsStore::Load() const
     settings.gap = ClampInt(GetPrivateProfileIntW(kIniSection, L"gap", settings.gap, settingsPath_.c_str()), 0, 80);
     settings.thickness = ClampInt(GetPrivateProfileIntW(kIniSection, L"thickness", settings.thickness, settingsPath_.c_str()), 1, 20);
     settings.opacity = ClampInt(GetPrivateProfileIntW(kIniSection, L"opacity", settings.opacity, settingsPath_.c_str()), 40, 255);
+    settings.rotation = ClampInt(GetPrivateProfileIntW(kIniSection, L"rotation", settings.rotation, settingsPath_.c_str()), 0, 359);
     settings.colorIndex = ClampInt(GetPrivateProfileIntW(kIniSection, L"color_index", settings.colorIndex, settingsPath_.c_str()), 0, static_cast<int>(kColorPresets.size()) - 1);
     settings.style = IntToStyle(GetPrivateProfileIntW(kIniSection, L"style", StyleToInt(settings.style), settingsPath_.c_str()));
     settings.visible = GetPrivateProfileIntW(kIniSection, L"visible", settings.visible ? 1 : 0, settingsPath_.c_str()) != 0;
+    settings.middleDot = GetPrivateProfileIntW(kIniSection, L"middle_dot", settings.middleDot ? 1 : 0, settingsPath_.c_str()) != 0;
+    settings.outlineEnabled = GetPrivateProfileIntW(kIniSection, L"outline_enabled", settings.outlineEnabled ? 1 : 0, settingsPath_.c_str()) != 0;
     settings.renderMode = IntToRenderMode(GetPrivateProfileIntW(kIniSection, L"render_mode", RenderModeToInt(settings.renderMode), settingsPath_.c_str()));
     settings.useCustomColor = GetPrivateProfileIntW(kIniSection, L"use_custom_color", settings.useCustomColor ? 1 : 0, settingsPath_.c_str()) != 0;
 
@@ -85,6 +93,35 @@ Settings SettingsStore::Load() const
 
     settings.customImagePath = ReadStringValue(settingsPath_, L"custom_image_path", L"");
     settings.imageSize = ClampInt(GetPrivateProfileIntW(kIniSection, L"image_size", settings.imageSize, settingsPath_.c_str()), 16, 512);
+
+    for (int index = 0; index < kCrosshairStyleCount; ++index)
+    {
+        const CrosshairStyle style = IntToStyle(index);
+        CrosshairProfile profile = GetCrosshairProfile(settings, style);
+        if (style == settings.style)
+        {
+            profile = CaptureCrosshairProfile(settings);
+        }
+
+        profile.length = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"length").c_str(), profile.length, settingsPath_.c_str()), 4, 120);
+        profile.gap = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"gap").c_str(), profile.gap, settingsPath_.c_str()), 0, 80);
+        profile.thickness = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"thickness").c_str(), profile.thickness, settingsPath_.c_str()), 1, 20);
+        profile.opacity = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"opacity").c_str(), profile.opacity, settingsPath_.c_str()), 40, 255);
+        profile.rotation = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"rotation").c_str(), profile.rotation, settingsPath_.c_str()), 0, 359);
+        profile.colorIndex = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"color_index").c_str(), profile.colorIndex, settingsPath_.c_str()), 0, static_cast<int>(kColorPresets.size()) - 1);
+        profile.useCustomColor = GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"use_custom_color").c_str(), profile.useCustomColor ? 1 : 0, settingsPath_.c_str()) != 0;
+        profile.middleDot = GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"middle_dot").c_str(), profile.middleDot ? 1 : 0, settingsPath_.c_str()) != 0;
+        profile.outlineEnabled = GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"outline_enabled").c_str(), profile.outlineEnabled ? 1 : 0, settingsPath_.c_str()) != 0;
+
+        const int profileRed = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"custom_red").c_str(), GetRValue(profile.customColor), settingsPath_.c_str()), 0, 255);
+        const int profileGreen = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"custom_green").c_str(), GetGValue(profile.customColor), settingsPath_.c_str()), 0, 255);
+        const int profileBlue = ClampInt(GetPrivateProfileIntW(kIniSection, StyleProfileKey(style, L"custom_blue").c_str(), GetBValue(profile.customColor), settingsPath_.c_str()), 0, 255);
+        profile.customColor = RGB(profileRed, profileGreen, profileBlue);
+
+        GetCrosshairProfile(settings, style) = profile;
+    }
+
+    LoadStyleProfile(settings, settings.style);
 
     if (settings.customImagePath.empty() && FileExists(importedImagePath_))
     {
@@ -116,20 +153,44 @@ void SettingsStore::Save(const Settings& settings) const
 {
     EnsureDirectories();
 
-    WriteIntValue(settingsPath_, L"length", settings.length);
-    WriteIntValue(settingsPath_, L"gap", settings.gap);
-    WriteIntValue(settingsPath_, L"thickness", settings.thickness);
-    WriteIntValue(settingsPath_, L"opacity", settings.opacity);
-    WriteIntValue(settingsPath_, L"color_index", settings.colorIndex);
-    WriteIntValue(settingsPath_, L"style", StyleToInt(settings.style));
-    WriteIntValue(settingsPath_, L"visible", settings.visible ? 1 : 0);
-    WriteIntValue(settingsPath_, L"render_mode", RenderModeToInt(settings.renderMode));
-    WriteIntValue(settingsPath_, L"use_custom_color", settings.useCustomColor ? 1 : 0);
-    WriteIntValue(settingsPath_, L"custom_red", GetRValue(settings.customColor));
-    WriteIntValue(settingsPath_, L"custom_green", GetGValue(settings.customColor));
-    WriteIntValue(settingsPath_, L"custom_blue", GetBValue(settings.customColor));
-    WriteStringValue(settingsPath_, L"custom_image_path", settings.customImagePath);
-    WriteIntValue(settingsPath_, L"image_size", settings.imageSize);
+    Settings persisted = settings;
+    SyncCurrentStyleProfile(persisted);
+
+    WriteIntValue(settingsPath_, L"length", persisted.length);
+    WriteIntValue(settingsPath_, L"gap", persisted.gap);
+    WriteIntValue(settingsPath_, L"thickness", persisted.thickness);
+    WriteIntValue(settingsPath_, L"opacity", persisted.opacity);
+    WriteIntValue(settingsPath_, L"rotation", persisted.rotation);
+    WriteIntValue(settingsPath_, L"color_index", persisted.colorIndex);
+    WriteIntValue(settingsPath_, L"style", StyleToInt(persisted.style));
+    WriteIntValue(settingsPath_, L"visible", persisted.visible ? 1 : 0);
+    WriteIntValue(settingsPath_, L"middle_dot", persisted.middleDot ? 1 : 0);
+    WriteIntValue(settingsPath_, L"outline_enabled", persisted.outlineEnabled ? 1 : 0);
+    WriteIntValue(settingsPath_, L"render_mode", RenderModeToInt(persisted.renderMode));
+    WriteIntValue(settingsPath_, L"use_custom_color", persisted.useCustomColor ? 1 : 0);
+    WriteIntValue(settingsPath_, L"custom_red", GetRValue(persisted.customColor));
+    WriteIntValue(settingsPath_, L"custom_green", GetGValue(persisted.customColor));
+    WriteIntValue(settingsPath_, L"custom_blue", GetBValue(persisted.customColor));
+    WriteStringValue(settingsPath_, L"custom_image_path", persisted.customImagePath);
+    WriteIntValue(settingsPath_, L"image_size", persisted.imageSize);
+
+    for (int index = 0; index < kCrosshairStyleCount; ++index)
+    {
+        const CrosshairStyle style = IntToStyle(index);
+        const CrosshairProfile& profile = GetCrosshairProfile(persisted, style);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"length").c_str(), profile.length);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"gap").c_str(), profile.gap);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"thickness").c_str(), profile.thickness);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"opacity").c_str(), profile.opacity);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"rotation").c_str(), profile.rotation);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"color_index").c_str(), profile.colorIndex);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"use_custom_color").c_str(), profile.useCustomColor ? 1 : 0);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"middle_dot").c_str(), profile.middleDot ? 1 : 0);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"outline_enabled").c_str(), profile.outlineEnabled ? 1 : 0);
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"custom_red").c_str(), GetRValue(profile.customColor));
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"custom_green").c_str(), GetGValue(profile.customColor));
+        WriteIntValue(settingsPath_, StyleProfileKey(style, L"custom_blue").c_str(), GetBValue(profile.customColor));
+    }
 }
 
 std::filesystem::path SettingsStore::ImportCustomImage(const std::wstring& sourcePath) const

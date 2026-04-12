@@ -48,8 +48,9 @@ private:
     void PaintPreview(HWND preview) const;
     void DrawOwnerButton(const DRAWITEMSTRUCT& drawItem) const;
     void HandleCommand(WPARAM wParam, LPARAM lParam);
-    void HandleScroll(WPARAM wParam, LPARAM lParam);
+    void HandleSliderChanged(HWND slider, int value);
     void HandleTrayMessage(LPARAM lParam);
+    void OpenStyleMenu();
     void OpenColorDialog();
     void OpenImportDialog();
     std::wstring OpenPngFileDialog() const;
@@ -89,7 +90,7 @@ private:
     HWND generalStorageLabel_ = nullptr;
 
     HWND previewControl_ = nullptr;
-    HWND styleCombo_ = nullptr;
+    HWND styleButton_ = nullptr;
     HWND lengthSlider_ = nullptr;
     HWND lengthValue_ = nullptr;
     HWND gapSlider_ = nullptr;
@@ -98,9 +99,13 @@ private:
     HWND thicknessValue_ = nullptr;
     HWND opacitySlider_ = nullptr;
     HWND opacityValue_ = nullptr;
+    HWND rotationSlider_ = nullptr;
+    HWND rotationValue_ = nullptr;
     HWND useCustomColorCheck_ = nullptr;
     HWND pickColorButton_ = nullptr;
     HWND customColorSwatch_ = nullptr;
+    HWND middleDotCheck_ = nullptr;
+    HWND outlineCheck_ = nullptr;
 
     HWND enableCustomImageCheck_ = nullptr;
     HWND importImageButton_ = nullptr;

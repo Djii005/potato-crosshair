@@ -29,6 +29,22 @@ constexpr int kSidebarGap = 10;
 constexpr int kContentGap = 20;
 constexpr int kResizeBorder = 8;
 constexpr int kWindowCornerRadius = 20;
+constexpr int kStyleButtonHeight = 40;
+constexpr int kToggleHeight = 30;
+constexpr int kToggleTrackWidth = 50;
+constexpr int kToggleTrackHeight = 22;
+constexpr int kToggleThumbInset = 3;
+constexpr int kCardPadding = 24;
+constexpr int kCardTitleHeight = 52;
+constexpr int kPreviewPreferredSize = 240;
+constexpr int kCrosshairStackBreakpoint = 620;
+constexpr int kSliderHorizontalPadding = 18;
+constexpr int kSliderTrackHeight = 4;
+constexpr int kSliderThumbRadius = 9;
+constexpr UINT kSliderChangedMessage = WM_APP + 141;
+constexpr UINT kSliderSetRangeMessage = WM_APP + 142;
+constexpr UINT kSliderSetValueMessage = WM_APP + 143;
+constexpr wchar_t kSliderWindowClass[] = L"PotatoCrosshairSliderWindow";
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -46,6 +62,16 @@ RECT MakeRect(const int left, const int top, const int width, const int height)
 {
     RECT rect{left, top, left + width, top + height};
     return rect;
+}
+
+int RectWidth(const RECT& rect)
+{
+    return rect.right - rect.left;
+}
+
+int RectHeight(const RECT& rect)
+{
+    return rect.bottom - rect.top;
 }
 
 std::wstring SliderText(const wchar_t* label, const int value, const wchar_t* suffix = L"")
@@ -92,6 +118,266 @@ void DrawCard(HDC dc, const RECT& rect)
     SelectObject(dc, previousPen);
     DeleteObject(brush);
     DeleteObject(pen);
+}
+
+void FillRoundRect(HDC dc, const RECT& rect, const int radius, const COLORREF fillColor, const COLORREF borderColor)
+{
+    const HBRUSH brush = CreateSolidBrush(fillColor);
+    const HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
+    const HGDIOBJ previousBrush = SelectObject(dc, brush);
+    const HGDIOBJ previousPen = SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+    SelectObject(dc, previousBrush);
+    SelectObject(dc, previousPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
+
+struct CrosshairSectionLayout
+{
+    RECT previewCard{};
+    RECT controlsCard{};
+    RECT previewRect{};
+    bool stacked = false;
+};
+
+CrosshairSectionLayout CalculateCrosshairSectionLayout(const int cardLeft, const int sectionTop, const int availableWidth, const int sectionHeight)
+{
+    CrosshairSectionLayout layout{};
+    layout.stacked = availableWidth < kCrosshairStackBreakpoint;
+
+    const int previewCardWidth = layout.stacked ? availableWidth : std::min(356, std::max(296, availableWidth / 3));
+    const int controlsCardWidth = layout.stacked ? availableWidth : availableWidth - previewCardWidth - kContentGap;
+    const int previewCardHeight = layout.stacked ? 290 : sectionHeight;
+    const int controlsCardTop = layout.stacked ? sectionTop + previewCardHeight + kContentGap : sectionTop;
+    const int controlsCardHeight = layout.stacked ? sectionHeight - previewCardHeight - kContentGap : sectionHeight;
+    const int controlsLeft = layout.stacked ? cardLeft : cardLeft + previewCardWidth + kContentGap;
+
+    layout.previewCard = MakeRect(cardLeft, sectionTop, previewCardWidth, previewCardHeight);
+    layout.controlsCard = MakeRect(controlsLeft, controlsCardTop, controlsCardWidth, controlsCardHeight);
+
+    const int previewSpaceWidth = RectWidth(layout.previewCard) - (kCardPadding * 2);
+    const int previewSpaceHeight = RectHeight(layout.previewCard) - kCardTitleHeight - (kCardPadding * 2);
+    const int previewBase = std::min(previewSpaceWidth, previewSpaceHeight);
+    const int previewEdge = std::max(1, std::min(std::max(kPreviewPreferredSize, previewBase - 12), previewBase));
+    const int previewLeft = layout.previewCard.left + (RectWidth(layout.previewCard) - previewEdge) / 2;
+    const int previewTop = layout.previewCard.top + kCardTitleHeight + kCardPadding + std::max(0, (previewSpaceHeight - previewEdge) / 2);
+    layout.previewRect = MakeRect(previewLeft, previewTop, previewEdge, previewEdge);
+    return layout;
+}
+
+bool IsToggleControlId(const int controlId)
+{
+    return controlId == ID_GENERAL_VISIBLE
+        || controlId == ID_USE_CUSTOM_COLOR
+        || controlId == ID_ENABLE_CUSTOM_IMAGE
+        || controlId == ID_MIDDLE_DOT
+        || controlId == ID_OUTLINE_ENABLED;
+}
+
+bool ToggleStateForControl(const Settings& settings, const int controlId)
+{
+    switch (controlId)
+    {
+    case ID_GENERAL_VISIBLE:
+        return settings.visible;
+    case ID_USE_CUSTOM_COLOR:
+        return settings.useCustomColor;
+    case ID_ENABLE_CUSTOM_IMAGE:
+        return settings.renderMode == RenderMode::CustomImage && !settings.customImagePath.empty();
+    case ID_MIDDLE_DOT:
+        return settings.middleDot;
+    case ID_OUTLINE_ENABLED:
+        return settings.outlineEnabled;
+    default:
+        return false;
+    }
+}
+
+struct SliderState
+{
+    int minimum = 0;
+    int maximum = 100;
+    int value = 0;
+    bool dragging = false;
+};
+
+RECT SliderTrackRect(const RECT& clientRect)
+{
+    const int centerY = (clientRect.bottom - clientRect.top) / 2;
+    const int trackWidth = std::max(1, static_cast<int>(clientRect.right - clientRect.left) - (kSliderHorizontalPadding * 2));
+    return MakeRect(clientRect.left + kSliderHorizontalPadding, centerY - (kSliderTrackHeight / 2), trackWidth, kSliderTrackHeight);
+}
+
+int SliderThumbCenterX(const RECT& clientRect, const SliderState& state)
+{
+    const RECT trackRect = SliderTrackRect(clientRect);
+    const int range = std::max(1, state.maximum - state.minimum);
+    const double ratio = static_cast<double>(state.value - state.minimum) / static_cast<double>(range);
+    return trackRect.left + static_cast<int>(ratio * static_cast<double>(trackRect.right - trackRect.left));
+}
+
+int SliderValueFromPoint(const RECT& clientRect, const SliderState& state, const int x)
+{
+    const RECT trackRect = SliderTrackRect(clientRect);
+    const int clampedX = ClampInt(x, trackRect.left, trackRect.right);
+    const int trackWidth = std::max(1, static_cast<int>(trackRect.right - trackRect.left));
+    const double ratio = static_cast<double>(clampedX - trackRect.left) / static_cast<double>(trackWidth);
+    return state.minimum + static_cast<int>(ratio * static_cast<double>(state.maximum - state.minimum) + 0.5);
+}
+
+void PaintSlider(const HWND hwnd, SliderState& state)
+{
+    PAINTSTRUCT paint{};
+    const HDC dc = BeginPaint(hwnd, &paint);
+
+    RECT clientRect{};
+    GetClientRect(hwnd, &clientRect);
+    const int width = clientRect.right - clientRect.left;
+    const int height = clientRect.bottom - clientRect.top;
+
+    const HDC bufferDc = CreateCompatibleDC(dc);
+    const HBITMAP bufferBitmap = CreateCompatibleBitmap(dc, std::max(1, width), std::max(1, height));
+    const HGDIOBJ previousBitmap = SelectObject(bufferDc, bufferBitmap);
+
+    const HBRUSH backgroundBrush = CreateSolidBrush(kThemePanelBackground);
+    FillRect(bufferDc, &clientRect, backgroundBrush);
+    DeleteObject(backgroundBrush);
+
+    const RECT trackRect = SliderTrackRect(clientRect);
+    const int thumbCenterX = SliderThumbCenterX(clientRect, state);
+    const int thumbCenterY = (clientRect.bottom - clientRect.top) / 2;
+    const int activeWidth = std::max(0, thumbCenterX - static_cast<int>(trackRect.left));
+    const RECT activeRect = MakeRect(trackRect.left, trackRect.top, activeWidth, static_cast<int>(trackRect.bottom - trackRect.top));
+
+    const HBRUSH trackBrush = CreateSolidBrush(kThemeBorder);
+    const HBRUSH activeBrush = CreateSolidBrush(kThemeAccent);
+    const HBRUSH thumbBrush = CreateSolidBrush(kThemeText);
+    const HPEN thumbPen = CreatePen(PS_SOLID, 2, kThemeAccent);
+    const HGDIOBJ previousBrush = SelectObject(bufferDc, trackBrush);
+    const HGDIOBJ previousPen = SelectObject(bufferDc, GetStockObject(NULL_PEN));
+    RoundRect(bufferDc, trackRect.left, trackRect.top, trackRect.right, trackRect.bottom, kSliderTrackHeight, kSliderTrackHeight);
+    if (activeRect.right > activeRect.left)
+    {
+        SelectObject(bufferDc, activeBrush);
+        RoundRect(bufferDc, activeRect.left, activeRect.top, activeRect.right, activeRect.bottom, kSliderTrackHeight, kSliderTrackHeight);
+    }
+    SelectObject(bufferDc, thumbBrush);
+    SelectObject(bufferDc, thumbPen);
+    Ellipse(bufferDc, thumbCenterX - kSliderThumbRadius, thumbCenterY - kSliderThumbRadius, thumbCenterX + kSliderThumbRadius, thumbCenterY + kSliderThumbRadius);
+    SelectObject(bufferDc, previousBrush);
+    SelectObject(bufferDc, previousPen);
+    DeleteObject(trackBrush);
+    DeleteObject(activeBrush);
+    DeleteObject(thumbBrush);
+    DeleteObject(thumbPen);
+
+    BitBlt(dc, 0, 0, std::max(1, width), std::max(1, height), bufferDc, 0, 0, SRCCOPY);
+    SelectObject(bufferDc, previousBitmap);
+    DeleteObject(bufferBitmap);
+    DeleteDC(bufferDc);
+    EndPaint(hwnd, &paint);
+}
+
+void UpdateSliderValue(const HWND hwnd, SliderState& state, const int value, const bool notifyParent)
+{
+    const int clampedValue = ClampInt(value, state.minimum, state.maximum);
+    if (state.value == clampedValue)
+    {
+        return;
+    }
+
+    state.value = clampedValue;
+    InvalidateRect(hwnd, nullptr, FALSE);
+
+    if (notifyParent)
+    {
+        SendMessageW(GetParent(hwnd), kSliderChangedMessage, reinterpret_cast<WPARAM>(hwnd), state.value);
+    }
+}
+
+LRESULT CALLBACK SliderProc(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
+{
+    if (message == WM_NCCREATE)
+    {
+        auto* state = new SliderState{};
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        return TRUE;
+    }
+
+    auto* state = reinterpret_cast<SliderState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (state == nullptr)
+    {
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    switch (message)
+    {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT:
+        PaintSlider(hwnd, *state);
+        return 0;
+
+    case WM_LBUTTONDOWN:
+    {
+        SetFocus(hwnd);
+        SetCapture(hwnd);
+        state->dragging = true;
+        RECT clientRect{};
+        GetClientRect(hwnd, &clientRect);
+        UpdateSliderValue(hwnd, *state, SliderValueFromPoint(clientRect, *state, GET_X_LPARAM(lParam)), true);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+        if (state->dragging)
+        {
+            RECT clientRect{};
+            GetClientRect(hwnd, &clientRect);
+            UpdateSliderValue(hwnd, *state, SliderValueFromPoint(clientRect, *state, GET_X_LPARAM(lParam)), true);
+            return 0;
+        }
+        break;
+
+    case WM_LBUTTONUP:
+        if (state->dragging)
+        {
+            state->dragging = false;
+            ReleaseCapture();
+            RECT clientRect{};
+            GetClientRect(hwnd, &clientRect);
+            UpdateSliderValue(hwnd, *state, SliderValueFromPoint(clientRect, *state, GET_X_LPARAM(lParam)), true);
+            return 0;
+        }
+        break;
+
+    case WM_CAPTURECHANGED:
+        state->dragging = false;
+        return 0;
+
+    case kSliderSetRangeMessage:
+        state->minimum = static_cast<int>(wParam);
+        state->maximum = std::max(state->minimum, static_cast<int>(lParam));
+        state->value = ClampInt(state->value, state->minimum, state->maximum);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+
+    case kSliderSetValueMessage:
+        UpdateSliderValue(hwnd, *state, static_cast<int>(wParam), false);
+        return 0;
+
+    case WM_NCDESTROY:
+        delete state;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        return 0;
+
+    default:
+        break;
+    }
+
+    return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
 AppSection SectionFromId(const int id)
@@ -192,6 +478,15 @@ bool MainWindow::Create(const HINSTANCE instance)
     previewClass.lpszClassName = kPreviewWindowClass;
     RegisterClassExW(&previewClass);
 
+    WNDCLASSEXW sliderClass{};
+    sliderClass.cbSize = sizeof(sliderClass);
+    sliderClass.lpfnWndProc = &SliderProc;
+    sliderClass.hInstance = instance_;
+    sliderClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    sliderClass.hbrBackground = nullptr;
+    sliderClass.lpszClassName = kSliderWindowClass;
+    RegisterClassExW(&sliderClass);
+
     hwnd_ = CreateWindowExW(
         WS_EX_APPWINDOW,
         kAppWindowClass,
@@ -259,15 +554,13 @@ void MainWindow::ApplySettings(const Settings& settings)
     }
 
     updatingControls_ = true;
-    SendMessageW(generalVisibleCheck_, BM_SETCHECK, settings.visible ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(styleCombo_, CB_SETCURSEL, StyleToInt(settings.style), 0);
-    SendMessageW(lengthSlider_, TBM_SETPOS, TRUE, settings.length);
-    SendMessageW(gapSlider_, TBM_SETPOS, TRUE, settings.gap);
-    SendMessageW(thicknessSlider_, TBM_SETPOS, TRUE, settings.thickness);
-    SendMessageW(opacitySlider_, TBM_SETPOS, TRUE, settings.opacity);
-    SendMessageW(imageSizeSlider_, TBM_SETPOS, TRUE, settings.imageSize);
-    SendMessageW(useCustomColorCheck_, BM_SETCHECK, settings.useCustomColor ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(enableCustomImageCheck_, BM_SETCHECK, settings.renderMode == RenderMode::CustomImage ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(styleButton_, StyleDisplayName(settings.style));
+    SendMessageW(lengthSlider_, kSliderSetValueMessage, settings.length, 0);
+    SendMessageW(gapSlider_, kSliderSetValueMessage, settings.gap, 0);
+    SendMessageW(thicknessSlider_, kSliderSetValueMessage, settings.thickness, 0);
+    SendMessageW(opacitySlider_, kSliderSetValueMessage, settings.opacity, 0);
+    SendMessageW(rotationSlider_, kSliderSetValueMessage, settings.rotation, 0);
+    SendMessageW(imageSizeSlider_, kSliderSetValueMessage, settings.imageSize, 0);
 
     UpdateSliderLabels(settings);
     UpdateImageStatus(settings);
@@ -342,8 +635,8 @@ LRESULT MainWindow::HandleMessage(const UINT message, const WPARAM wParam, const
         HandleCommand(wParam, lParam);
         return 0;
 
-    case WM_HSCROLL:
-        HandleScroll(wParam, lParam);
+    case kSliderChangedMessage:
+        HandleSliderChanged(reinterpret_cast<HWND>(wParam), static_cast<int>(lParam));
         return 0;
 
     case WM_DRAWITEM:
@@ -499,52 +792,48 @@ void MainWindow::CreateControls()
     sectionButtons_[3] = CreateWindowExW(0, L"BUTTON", L"Hotkeys", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_SECTION_HOTKEYS), instance_, nullptr);
     sectionButtons_[4] = CreateWindowExW(0, L"BUTTON", L"About", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_SECTION_ABOUT), instance_, nullptr);
 
-    generalVisibleCheck_ = CreateWindowExW(0, L"BUTTON", L"Overlay enabled", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GENERAL_VISIBLE), instance_, nullptr);
+    generalVisibleCheck_ = CreateWindowExW(0, L"BUTTON", L"Overlay enabled", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GENERAL_VISIBLE), instance_, nullptr);
     generalSummaryLabel_ = CreateWindowExW(0, L"STATIC", L"The settings window opens when the app starts.\r\nMinimize and close both send it to the tray.\r\nLeft-click the tray icon to open it again.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     generalStorageLabel_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     previewControl_ = CreateWindowExW(0, kPreviewWindowClass, nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_PREVIEW_CONTROL), instance_, this);
-    styleCombo_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_STYLE_COMBO), instance_, nullptr);
-    SendMessageW(styleCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Cross"));
-    SendMessageW(styleCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Dot"));
-    SendMessageW(styleCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Circle"));
-    SendMessageW(styleCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"T-Shape"));
+    styleButton_ = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_STYLE_COMBO), instance_, nullptr);
 
-    constexpr DWORD kSliderStyle = WS_CHILD | WS_VISIBLE | TBS_NOTICKS | TBS_TRANSPARENTBKGND;
-    lengthSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_LENGTH_SLIDER), instance_, nullptr);
-    gapSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GAP_SLIDER), instance_, nullptr);
-    thicknessSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_THICKNESS_SLIDER), instance_, nullptr);
-    opacitySlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_OPACITY_SLIDER), instance_, nullptr);
-    SendMessageW(lengthSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(4, 120));
-    SendMessageW(gapSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 80));
-    SendMessageW(thicknessSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(1, 20));
-    SendMessageW(opacitySlider_, TBM_SETRANGE, TRUE, MAKELPARAM(40, 255));
-    SendMessageW(lengthSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
-    SendMessageW(gapSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
-    SendMessageW(thicknessSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
-    SendMessageW(opacitySlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
+    constexpr DWORD kSliderStyle = WS_CHILD | WS_VISIBLE;
+    lengthSlider_ = CreateWindowExW(0, kSliderWindowClass, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_LENGTH_SLIDER), instance_, nullptr);
+    gapSlider_ = CreateWindowExW(0, kSliderWindowClass, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_GAP_SLIDER), instance_, nullptr);
+    thicknessSlider_ = CreateWindowExW(0, kSliderWindowClass, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_THICKNESS_SLIDER), instance_, nullptr);
+    opacitySlider_ = CreateWindowExW(0, kSliderWindowClass, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_OPACITY_SLIDER), instance_, nullptr);
+    rotationSlider_ = CreateWindowExW(0, kSliderWindowClass, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_ROTATION_SLIDER), instance_, nullptr);
+    SendMessageW(lengthSlider_, kSliderSetRangeMessage, 4, 120);
+    SendMessageW(gapSlider_, kSliderSetRangeMessage, 0, 80);
+    SendMessageW(thicknessSlider_, kSliderSetRangeMessage, 1, 20);
+    SendMessageW(opacitySlider_, kSliderSetRangeMessage, 40, 255);
+    SendMessageW(rotationSlider_, kSliderSetRangeMessage, 0, 359);
 
     lengthValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     gapValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     thicknessValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     opacityValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    rotationValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     for (size_t index = 0; index < swatchButtons_.size(); ++index)
     {
         swatchButtons_[index] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SWATCH_BASE + static_cast<int>(index))), instance_, nullptr);
     }
 
-    useCustomColorCheck_ = CreateWindowExW(0, L"BUTTON", L"Use custom color", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_USE_CUSTOM_COLOR), instance_, nullptr);
+    useCustomColorCheck_ = CreateWindowExW(0, L"BUTTON", L"Use custom color", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_USE_CUSTOM_COLOR), instance_, nullptr);
     pickColorButton_ = CreateWindowExW(0, L"BUTTON", L"Choose Color", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_PICK_COLOR_BUTTON), instance_, nullptr);
     customColorSwatch_ = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_CUSTOM_COLOR_SWATCH), instance_, nullptr);
+    middleDotCheck_ = CreateWindowExW(0, L"BUTTON", L"Middle dot", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_MIDDLE_DOT), instance_, nullptr);
+    outlineCheck_ = CreateWindowExW(0, L"BUTTON", L"Outline", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_OUTLINE_ENABLED), instance_, nullptr);
 
-    enableCustomImageCheck_ = CreateWindowExW(0, L"BUTTON", L"Use PNG crosshair", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_ENABLE_CUSTOM_IMAGE), instance_, nullptr);
+    enableCustomImageCheck_ = CreateWindowExW(0, L"BUTTON", L"Use PNG crosshair", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_ENABLE_CUSTOM_IMAGE), instance_, nullptr);
     importImageButton_ = CreateWindowExW(0, L"BUTTON", L"Import PNG", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMPORT_IMAGE), instance_, nullptr);
     clearImageButton_ = CreateWindowExW(0, L"BUTTON", L"Clear PNG", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_CLEAR_IMAGE), instance_, nullptr);
     imageStatusLabel_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
-    imageSizeSlider_ = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMAGE_SIZE_SLIDER), instance_, nullptr);
-    SendMessageW(imageSizeSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(16, 512));
-    SendMessageW(imageSizeSlider_, CCM_SETBKCOLOR, 0, static_cast<LPARAM>(kThemePanelBackground));
+    imageSizeSlider_ = CreateWindowExW(0, kSliderWindowClass, nullptr, kSliderStyle, 0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(ID_IMAGE_SIZE_SLIDER), instance_, nullptr);
+    SendMessageW(imageSizeSlider_, kSliderSetRangeMessage, 16, 512);
     imageSizeValue_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
     hotkeysText_ = CreateWindowExW(0, L"STATIC", L"F8  Toggle overlay\r\nF9  Cycle built-in style\r\nCtrl + Alt + C  Cycle preset color\r\nCtrl + Alt + Up / Down  Length\r\nCtrl + Alt + Left / Right  Gap\r\nCtrl + Alt + PageUp / PageDown  Thickness\r\nCtrl + Alt + Home / End  Opacity\r\nCtrl + Alt + R  Reset defaults\r\nCtrl + Alt + Q  Quit", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
@@ -555,10 +844,10 @@ void MainWindow::CreateControls()
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont_), TRUE);
     }
 
-    const std::array<HWND, 16> bodyControls = {
+    const std::array<HWND, 20> bodyControls = {
         headerMinimizeButton_, headerCloseButton_, generalVisibleCheck_, generalSummaryLabel_, generalStorageLabel_, previewControl_,
-        styleCombo_, lengthValue_, gapValue_, thicknessValue_, opacityValue_, useCustomColorCheck_,
-        pickColorButton_, customColorSwatch_, imageStatusLabel_, imageSizeValue_};
+        styleButton_, lengthValue_, gapValue_, thicknessValue_, opacityValue_, rotationValue_, useCustomColorCheck_,
+        pickColorButton_, customColorSwatch_, middleDotCheck_, outlineCheck_, enableCustomImageCheck_, imageStatusLabel_, imageSizeValue_};
 
     for (const HWND control : bodyControls)
     {
@@ -576,7 +865,7 @@ void MainWindow::CreateControls()
     RegisterSectionControl(generalSummaryLabel_, AppSection::General);
     RegisterSectionControl(generalStorageLabel_, AppSection::General);
     RegisterSectionControl(previewControl_, AppSection::Crosshair);
-    RegisterSectionControl(styleCombo_, AppSection::Crosshair);
+    RegisterSectionControl(styleButton_, AppSection::Crosshair);
     RegisterSectionControl(lengthSlider_, AppSection::Crosshair);
     RegisterSectionControl(lengthValue_, AppSection::Crosshair);
     RegisterSectionControl(gapSlider_, AppSection::Crosshair);
@@ -585,9 +874,13 @@ void MainWindow::CreateControls()
     RegisterSectionControl(thicknessValue_, AppSection::Crosshair);
     RegisterSectionControl(opacitySlider_, AppSection::Crosshair);
     RegisterSectionControl(opacityValue_, AppSection::Crosshair);
+    RegisterSectionControl(rotationSlider_, AppSection::Crosshair);
+    RegisterSectionControl(rotationValue_, AppSection::Crosshair);
     RegisterSectionControl(useCustomColorCheck_, AppSection::Crosshair);
     RegisterSectionControl(pickColorButton_, AppSection::Crosshair);
     RegisterSectionControl(customColorSwatch_, AppSection::Crosshair);
+    RegisterSectionControl(middleDotCheck_, AppSection::Crosshair);
+    RegisterSectionControl(outlineCheck_, AppSection::Crosshair);
     for (const HWND swatch : swatchButtons_)
     {
         RegisterSectionControl(swatch, AppSection::Crosshair);
@@ -617,7 +910,7 @@ void MainWindow::LayoutChildren(const int width, const int height)
     const int contentTop = 130;
     const int sectionHeight = std::max(420, height - contentTop - 24);
     const int availableWidth = contentWidth - 24;
-    HDWP deferred = BeginDeferWindowPos(40);
+    HDWP deferred = BeginDeferWindowPos(48);
 
     auto placeControl = [&](const HWND control, const int x, const int y, const int controlWidth, const int controlHeight)
     {
@@ -646,32 +939,24 @@ void MainWindow::LayoutChildren(const int width, const int height)
         sidebarY += kSidebarButtonHeight + kSidebarGap;
     }
 
-    placeControl(generalVisibleCheck_, cardLeft + 24, contentTop + 28, 220, 28);
-    placeControl(generalSummaryLabel_, cardLeft + 24, contentTop + 78, availableWidth - 48, 100);
-    placeControl(generalStorageLabel_, cardLeft + 24, contentTop + 206, availableWidth - 48, 80);
+    placeControl(generalVisibleCheck_, cardLeft + 24, contentTop + 28, availableWidth - 48, 34);
+    placeControl(generalSummaryLabel_, cardLeft + 24, contentTop + 82, availableWidth - 48, 96);
+    placeControl(generalStorageLabel_, cardLeft + 24, contentTop + 202, availableWidth - 48, 80);
 
-    const bool stackedCrosshairLayout = availableWidth < 620;
-    const int previewCardWidth = stackedCrosshairLayout ? availableWidth : std::min(340, std::max(280, (availableWidth / 2) - 30));
-    const int controlsCardWidth = stackedCrosshairLayout ? availableWidth : availableWidth - previewCardWidth - kContentGap;
-    const int previewCardHeight = stackedCrosshairLayout ? 290 : sectionHeight;
-    const int controlsCardTop = stackedCrosshairLayout ? contentTop + previewCardHeight + kContentGap : contentTop;
-    const int previewLeft = cardLeft;
-    const int controlsLeft = stackedCrosshairLayout ? cardLeft : previewLeft + previewCardWidth + kContentGap;
-    const int previewSize = std::max(180, std::min(previewCardWidth - 52, previewCardHeight - 52));
-    const int previewTop = contentTop + (previewCardHeight - previewSize) / 2;
-    const int previewInnerLeft = previewLeft + (previewCardWidth - previewSize) / 2;
+    const CrosshairSectionLayout crosshairLayout = CalculateCrosshairSectionLayout(cardLeft, contentTop, availableWidth, sectionHeight);
 
-    placeControl(previewControl_, previewInnerLeft, previewTop, previewSize, previewSize);
+    placeControl(previewControl_, crosshairLayout.previewRect.left, crosshairLayout.previewRect.top, RectWidth(crosshairLayout.previewRect), RectHeight(crosshairLayout.previewRect));
 
-    const int controlsInnerLeft = controlsLeft + 24;
-    const int controlsInnerWidth = controlsCardWidth - 48;
-    int y = controlsCardTop + 26;
-    placeControl(styleCombo_, controlsInnerLeft, y, controlsInnerWidth, 300);
-    y += 52;
+    const int controlsInnerLeft = crosshairLayout.controlsCard.left + kCardPadding;
+    const int controlsInnerWidth = RectWidth(crosshairLayout.controlsCard) - (kCardPadding * 2);
+    const int controlsBottom = crosshairLayout.controlsCard.bottom - kCardPadding;
+    int y = crosshairLayout.controlsCard.top + kCardTitleHeight;
+    placeControl(styleButton_, controlsInnerLeft, y, controlsInnerWidth, kStyleButtonHeight);
+    y += kStyleButtonHeight + 10;
 
-    const int sliderHeight = 32;
-    const int labelHeight = 24;
-    const int groupGap = 14;
+    const int sliderHeight = 22;
+    const int labelHeight = 20;
+    const int groupGap = 6;
     placeControl(lengthValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
     y += labelHeight;
     placeControl(lengthSlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
@@ -687,28 +972,40 @@ void MainWindow::LayoutChildren(const int width, const int height)
     placeControl(opacityValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
     y += labelHeight;
     placeControl(opacitySlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
-    y += sliderHeight + 18;
+    y += sliderHeight + groupGap;
+    placeControl(rotationValue_, controlsInnerLeft, y, controlsInnerWidth, labelHeight);
+    y += labelHeight;
+    placeControl(rotationSlider_, controlsInnerLeft, y, controlsInnerWidth, sliderHeight);
+    y += sliderHeight + 10;
 
     int swatchLeft = controlsInnerLeft;
     for (const HWND swatch : swatchButtons_)
     {
-        placeControl(swatch, swatchLeft, y, 30, 30);
-        swatchLeft += 42;
+        placeControl(swatch, swatchLeft, y, 26, 26);
+        swatchLeft += 36;
     }
+    y += 34;
+
+    placeControl(useCustomColorCheck_, controlsInnerLeft, y, controlsInnerWidth, kToggleHeight);
+    y += kToggleHeight + 8;
+    const int pickColorButtonWidth = std::max(130, std::min(176, controlsInnerWidth - 50));
+    placeControl(pickColorButton_, controlsInnerLeft, y, pickColorButtonWidth, 36);
+    placeControl(customColorSwatch_, controlsInnerLeft + pickColorButtonWidth + 10, y, 36, 36);
     y += 46;
 
-    placeControl(useCustomColorCheck_, controlsInnerLeft, y, controlsInnerWidth, 24);
-    y += 36;
-    const int pickColorButtonWidth = std::max(120, std::min(170, controlsInnerWidth - 52));
-    placeControl(pickColorButton_, controlsInnerLeft, y, pickColorButtonWidth, 38);
-    placeControl(customColorSwatch_, controlsInnerLeft + pickColorButtonWidth + 12, y, 38, 38);
+    const int toggleSpacing = 12;
+    const int toggleWidth = std::max(120, (controlsInnerWidth - toggleSpacing) / 2);
+    const int toggleTop = std::min(y, controlsBottom - kToggleHeight);
+    placeControl(middleDotCheck_, controlsInnerLeft, toggleTop, toggleWidth, kToggleHeight);
+    placeControl(outlineCheck_, controlsInnerLeft + toggleWidth + toggleSpacing, toggleTop, toggleWidth, kToggleHeight);
 
-    placeControl(enableCustomImageCheck_, cardLeft + 24, contentTop + 28, availableWidth - 48, 28);
-    placeControl(importImageButton_, cardLeft + 24, contentTop + 88, 136, 40);
-    placeControl(clearImageButton_, cardLeft + 174, contentTop + 88, 136, 40);
-    placeControl(imageStatusLabel_, cardLeft + 24, contentTop + 154, availableWidth - 48, 40);
-    placeControl(imageSizeValue_, cardLeft + 24, contentTop + 218, availableWidth - 48, 24);
-    placeControl(imageSizeSlider_, cardLeft + 24, contentTop + 248, availableWidth - 48, 32);
+    placeControl(enableCustomImageCheck_, cardLeft + 24, contentTop + 28, availableWidth - 48, kToggleHeight);
+    const int imageButtonWidth = std::max(128, std::min(148, (availableWidth - 60) / 2));
+    placeControl(importImageButton_, cardLeft + 24, contentTop + 82, imageButtonWidth, 38);
+    placeControl(clearImageButton_, cardLeft + 36 + imageButtonWidth, contentTop + 82, imageButtonWidth, 38);
+    placeControl(imageStatusLabel_, cardLeft + 24, contentTop + 144, availableWidth - 48, 40);
+    placeControl(imageSizeValue_, cardLeft + 24, contentTop + 206, availableWidth - 48, 22);
+    placeControl(imageSizeSlider_, cardLeft + 24, contentTop + 232, availableWidth - 48, 24);
 
     placeControl(hotkeysText_, cardLeft + 28, contentTop + 28, availableWidth - 56, sectionHeight - 56);
     placeControl(aboutText_, cardLeft + 28, contentTop + 28, availableWidth - 56, sectionHeight - 56);
@@ -748,6 +1045,7 @@ void MainWindow::UpdateSliderLabels(const Settings& settings)
     SetWindowTextW(gapValue_, SliderText(L"Gap ", settings.gap).c_str());
     SetWindowTextW(thicknessValue_, SliderText(L"Thickness ", settings.thickness).c_str());
     SetWindowTextW(opacityValue_, SliderText(L"Opacity ", settings.opacity).c_str());
+    SetWindowTextW(rotationValue_, SliderText(L"Rotation ", settings.rotation, L"\x00B0").c_str());
     SetWindowTextW(imageSizeValue_, SliderText(L"PNG size ", settings.imageSize, L" px").c_str());
 }
 
@@ -766,8 +1064,14 @@ void MainWindow::UpdateOwnerDrawControls()
     {
         InvalidateRect(swatch, nullptr, TRUE);
     }
+    InvalidateRect(generalVisibleCheck_, nullptr, TRUE);
+    InvalidateRect(styleButton_, nullptr, TRUE);
+    InvalidateRect(useCustomColorCheck_, nullptr, TRUE);
     InvalidateRect(pickColorButton_, nullptr, TRUE);
     InvalidateRect(customColorSwatch_, nullptr, TRUE);
+    InvalidateRect(middleDotCheck_, nullptr, TRUE);
+    InvalidateRect(outlineCheck_, nullptr, TRUE);
+    InvalidateRect(enableCustomImageCheck_, nullptr, TRUE);
     InvalidateRect(importImageButton_, nullptr, TRUE);
     InvalidateRect(clearImageButton_, nullptr, TRUE);
     InvalidateRect(headerMinimizeButton_, nullptr, TRUE);
@@ -831,16 +1135,19 @@ void MainWindow::PaintWindow()
     }
     else if (activeSection_ == AppSection::Crosshair)
     {
-        const bool stackedCrosshairLayout = availableWidth < 620;
-        const int previewCardWidth = stackedCrosshairLayout ? availableWidth : std::min(340, std::max(280, (availableWidth / 2) - 30));
-        const int controlsCardWidth = stackedCrosshairLayout ? availableWidth : availableWidth - previewCardWidth - kContentGap;
-        const int previewCardHeight = stackedCrosshairLayout ? 290 : sectionHeight;
-        const int controlsCardTop = stackedCrosshairLayout ? sectionTop + previewCardHeight + kContentGap : sectionTop;
-        const int controlsCardHeight = stackedCrosshairLayout ? sectionHeight - previewCardHeight - kContentGap : sectionHeight;
-        const int controlsLeft = stackedCrosshairLayout ? cardLeft : cardLeft + previewCardWidth + kContentGap;
+        const CrosshairSectionLayout crosshairLayout = CalculateCrosshairSectionLayout(cardLeft, sectionTop, availableWidth, sectionHeight);
 
-        DrawCard(bufferDc, MakeRect(cardLeft, sectionTop, previewCardWidth, previewCardHeight));
-        DrawCard(bufferDc, MakeRect(controlsLeft, controlsCardTop, controlsCardWidth, controlsCardHeight));
+        DrawCard(bufferDc, crosshairLayout.previewCard);
+        DrawCard(bufferDc, crosshairLayout.controlsCard);
+
+        SetTextColor(bufferDc, kThemeText);
+        SelectObject(bufferDc, bodyFont_);
+        TextOutW(bufferDc, crosshairLayout.previewCard.left + 20, crosshairLayout.previewCard.top + 18, L"Live preview", 12);
+        TextOutW(bufferDc, crosshairLayout.controlsCard.left + 20, crosshairLayout.controlsCard.top + 18, L"Style settings", 14);
+
+        SelectObject(bufferDc, smallFont_);
+        SetTextColor(bufferDc, kThemeMutedText);
+        TextOutW(bufferDc, crosshairLayout.controlsCard.left + 20, crosshairLayout.controlsCard.top + 40, L"Each built-in style keeps its own settings.", 41);
     }
     else
     {
@@ -861,17 +1168,18 @@ void MainWindow::PaintPreview(const HWND preview) const
 
     RECT clientRect{};
     GetClientRect(preview, &clientRect);
-    const HBRUSH brush = CreateSolidBrush(kThemePanelSecondary);
-    FillRect(dc, &clientRect, brush);
-    DeleteObject(brush);
+    FillRoundRect(dc, clientRect, 18, kThemePanelSecondary, kThemeBorder);
 
-    const HPEN borderPen = CreatePen(PS_SOLID, 1, kThemeBorder);
-    const HGDIOBJ previousPen = SelectObject(dc, borderPen);
-    const HGDIOBJ previousBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-    Rectangle(dc, clientRect.left, clientRect.top, clientRect.right, clientRect.bottom);
+    const int centerX = clientRect.left + (RectWidth(clientRect) / 2);
+    const int centerY = clientRect.top + (RectHeight(clientRect) / 2);
+    const HPEN guidePen = CreatePen(PS_SOLID, 1, RGB(50, 50, 50));
+    const HGDIOBJ previousPen = SelectObject(dc, guidePen);
+    MoveToEx(dc, clientRect.left + 24, centerY, nullptr);
+    LineTo(dc, clientRect.right - 24, centerY);
+    MoveToEx(dc, centerX, clientRect.top + 24, nullptr);
+    LineTo(dc, centerX, clientRect.bottom - 24);
     SelectObject(dc, previousPen);
-    SelectObject(dc, previousBrush);
-    DeleteObject(borderPen);
+    DeleteObject(guidePen);
 
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -886,10 +1194,75 @@ void MainWindow::DrawOwnerButton(const DRAWITEMSTRUCT& drawItem) const
     const int controlId = static_cast<int>(drawItem.CtlID);
     const bool selected = (drawItem.itemState & ODS_SELECTED) != 0;
     const bool disabled = (drawItem.itemState & ODS_DISABLED) != 0;
+    const Settings& settings = app_->settings();
 
     COLORREF fillColor = kThemePanelSecondary;
     COLORREF borderColor = kThemeBorder;
     COLORREF textColor = disabled ? kThemeMutedText : kThemeText;
+
+    if (IsToggleControlId(controlId))
+    {
+        fillColor = selected ? kThemePanelSecondary : kThemePanelBackground;
+        borderColor = selected ? kThemeAccent : kThemeBorder;
+        FillRoundRect(drawItem.hDC, drawItem.rcItem, 12, fillColor, borderColor);
+
+        wchar_t text[128]{};
+        GetWindowTextW(drawItem.hwndItem, text, static_cast<int>(std::size(text)));
+
+        RECT textRect = drawItem.rcItem;
+        textRect.left += 14;
+        textRect.right -= kToggleTrackWidth + 26;
+        SetBkMode(drawItem.hDC, TRANSPARENT);
+        SetTextColor(drawItem.hDC, textColor);
+        SelectObject(drawItem.hDC, bodyFont_);
+        DrawTextW(drawItem.hDC, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        RECT toggleRect = drawItem.rcItem;
+        toggleRect.right -= 12;
+        toggleRect.left = toggleRect.right - kToggleTrackWidth;
+        toggleRect.top += (drawItem.rcItem.bottom - drawItem.rcItem.top - kToggleTrackHeight) / 2;
+        toggleRect.bottom = toggleRect.top + kToggleTrackHeight;
+
+        const bool checked = ToggleStateForControl(settings, controlId);
+        const COLORREF toggleFill = disabled ? kThemeBorder : (checked ? kThemeAccent : RGB(58, 58, 58));
+        const COLORREF toggleBorder = checked ? kThemeAccentHover : kThemeBorder;
+        FillRoundRect(drawItem.hDC, toggleRect, kToggleTrackHeight, toggleFill, toggleBorder);
+
+        RECT thumbRect = toggleRect;
+        thumbRect.top += kToggleThumbInset;
+        thumbRect.bottom -= kToggleThumbInset;
+        const int thumbSize = thumbRect.bottom - thumbRect.top;
+        thumbRect.left = checked ? toggleRect.right - kToggleThumbInset - thumbSize : toggleRect.left + kToggleThumbInset;
+        thumbRect.right = thumbRect.left + thumbSize;
+        FillRoundRect(drawItem.hDC, thumbRect, thumbSize, kThemeText, checked ? kThemeAccentHover : kThemeBorder);
+        return;
+    }
+
+    if (controlId == ID_STYLE_COMBO)
+    {
+        fillColor = selected ? kThemePanelSecondary : kThemePanelBackground;
+        borderColor = selected ? kThemeAccent : kThemeBorder;
+        FillRoundRect(drawItem.hDC, drawItem.rcItem, 12, fillColor, borderColor);
+
+        RECT textRect = drawItem.rcItem;
+        textRect.left += 14;
+        textRect.right -= 36;
+        SetBkMode(drawItem.hDC, TRANSPARENT);
+        SetTextColor(drawItem.hDC, textColor);
+        SelectObject(drawItem.hDC, bodyFont_);
+        DrawTextW(drawItem.hDC, StyleDisplayName(settings.style), -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        const int centerX = drawItem.rcItem.right - 18;
+        const int centerY = (drawItem.rcItem.top + drawItem.rcItem.bottom) / 2;
+        const HPEN chevronPen = CreatePen(PS_SOLID, 2, textColor);
+        const HGDIOBJ previousPen = SelectObject(drawItem.hDC, chevronPen);
+        MoveToEx(drawItem.hDC, centerX - 5, centerY - 2, nullptr);
+        LineTo(drawItem.hDC, centerX, centerY + 3);
+        LineTo(drawItem.hDC, centerX + 5, centerY - 2);
+        SelectObject(drawItem.hDC, previousPen);
+        DeleteObject(chevronPen);
+        return;
+    }
 
     if (controlId >= ID_SECTION_GENERAL && controlId <= ID_SECTION_ABOUT)
     {
@@ -919,24 +1292,16 @@ void MainWindow::DrawOwnerButton(const DRAWITEMSTRUCT& drawItem) const
     }
     else if (controlId == ID_CUSTOM_COLOR_SWATCH)
     {
-        fillColor = app_->settings().customColor;
-        borderColor = app_->settings().useCustomColor ? kThemeAccentHover : kThemeBorder;
+        fillColor = settings.customColor;
+        borderColor = settings.useCustomColor ? kThemeAccentHover : kThemeBorder;
     }
     else if (controlId >= ID_SWATCH_BASE && controlId < ID_SWATCH_BASE + static_cast<int>(kColorPresets.size()))
     {
         fillColor = GetPresetColor(controlId - ID_SWATCH_BASE);
-        borderColor = (!app_->settings().useCustomColor && app_->settings().colorIndex == controlId - ID_SWATCH_BASE) ? kThemeAccentHover : kThemeBorder;
+        borderColor = (!settings.useCustomColor && settings.colorIndex == controlId - ID_SWATCH_BASE) ? kThemeAccentHover : kThemeBorder;
     }
 
-    const HBRUSH brush = CreateSolidBrush(fillColor);
-    const HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
-    const HGDIOBJ previousBrush = SelectObject(drawItem.hDC, brush);
-    const HGDIOBJ previousPen = SelectObject(drawItem.hDC, pen);
-    RoundRect(drawItem.hDC, drawItem.rcItem.left, drawItem.rcItem.top, drawItem.rcItem.right, drawItem.rcItem.bottom, 10, 10);
-    SelectObject(drawItem.hDC, previousBrush);
-    SelectObject(drawItem.hDC, previousPen);
-    DeleteObject(brush);
-    DeleteObject(pen);
+    FillRoundRect(drawItem.hDC, drawItem.rcItem, 10, fillColor, borderColor);
 
     if (controlId == ID_CUSTOM_COLOR_SWATCH || (controlId >= ID_SWATCH_BASE && controlId < ID_SWATCH_BASE + static_cast<int>(kColorPresets.size())))
     {
@@ -972,6 +1337,11 @@ void MainWindow::HandleCommand(const WPARAM wParam, const LPARAM)
         HideInsteadOfClose();
         return;
     }
+    if (controlId == ID_STYLE_COMBO && notification == BN_CLICKED)
+    {
+        OpenStyleMenu();
+        return;
+    }
     if (controlId == ID_TRAY_OPEN)
     {
         app_->ShowSettingsWindow();
@@ -996,19 +1366,13 @@ void MainWindow::HandleCommand(const WPARAM wParam, const LPARAM)
 
     if (controlId == ID_GENERAL_VISIBLE && notification == BN_CLICKED)
     {
-        updated.visible = SendMessageW(generalVisibleCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        app_->ApplySettings(updated);
-        return;
-    }
-    if (controlId == ID_STYLE_COMBO && notification == CBN_SELCHANGE)
-    {
-        updated.style = IntToStyle(static_cast<int>(SendMessageW(styleCombo_, CB_GETCURSEL, 0, 0)));
+        updated.visible = !updated.visible;
         app_->ApplySettings(updated);
         return;
     }
     if (controlId == ID_USE_CUSTOM_COLOR && notification == BN_CLICKED)
     {
-        updated.useCustomColor = SendMessageW(useCustomColorCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        updated.useCustomColor = !updated.useCustomColor;
         app_->ApplySettings(updated);
         return;
     }
@@ -1026,7 +1390,19 @@ void MainWindow::HandleCommand(const WPARAM wParam, const LPARAM)
     }
     if (controlId == ID_ENABLE_CUSTOM_IMAGE && notification == BN_CLICKED)
     {
-        updated.renderMode = SendMessageW(enableCustomImageCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED && !updated.customImagePath.empty() ? RenderMode::CustomImage : RenderMode::BuiltIn;
+        updated.renderMode = updated.renderMode == RenderMode::CustomImage ? RenderMode::BuiltIn : (!updated.customImagePath.empty() ? RenderMode::CustomImage : RenderMode::BuiltIn);
+        app_->ApplySettings(updated);
+        return;
+    }
+    if (controlId == ID_MIDDLE_DOT && notification == BN_CLICKED)
+    {
+        updated.middleDot = !updated.middleDot;
+        app_->ApplySettings(updated);
+        return;
+    }
+    if (controlId == ID_OUTLINE_ENABLED && notification == BN_CLICKED)
+    {
+        updated.outlineEnabled = !updated.outlineEnabled;
         app_->ApplySettings(updated);
         return;
     }
@@ -1041,35 +1417,38 @@ void MainWindow::HandleCommand(const WPARAM wParam, const LPARAM)
     }
 }
 
-void MainWindow::HandleScroll(const WPARAM, const LPARAM lParam)
+void MainWindow::HandleSliderChanged(const HWND slider, const int value)
 {
     if (updatingControls_)
     {
         return;
     }
 
-    const HWND slider = reinterpret_cast<HWND>(lParam);
     Settings updated = CopySettings();
 
     if (slider == lengthSlider_)
     {
-        updated.length = static_cast<int>(SendMessageW(lengthSlider_, TBM_GETPOS, 0, 0));
+        updated.length = value;
     }
     else if (slider == gapSlider_)
     {
-        updated.gap = static_cast<int>(SendMessageW(gapSlider_, TBM_GETPOS, 0, 0));
+        updated.gap = value;
     }
     else if (slider == thicknessSlider_)
     {
-        updated.thickness = static_cast<int>(SendMessageW(thicknessSlider_, TBM_GETPOS, 0, 0));
+        updated.thickness = value;
     }
     else if (slider == opacitySlider_)
     {
-        updated.opacity = static_cast<int>(SendMessageW(opacitySlider_, TBM_GETPOS, 0, 0));
+        updated.opacity = value;
+    }
+    else if (slider == rotationSlider_)
+    {
+        updated.rotation = value;
     }
     else if (slider == imageSizeSlider_)
     {
-        updated.imageSize = static_cast<int>(SendMessageW(imageSizeSlider_, TBM_GETPOS, 0, 0));
+        updated.imageSize = value;
     }
     else
     {
@@ -1093,6 +1472,35 @@ void MainWindow::HandleTrayMessage(const LPARAM lParam)
         break;
     default:
         break;
+    }
+}
+
+void MainWindow::OpenStyleMenu()
+{
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr)
+    {
+        return;
+    }
+
+    for (int index = 0; index < kCrosshairStyleCount; ++index)
+    {
+        const UINT flags = MF_STRING | (StyleToInt(app_->settings().style) == index ? MF_CHECKED : 0U);
+        AppendMenuW(menu, flags, ID_STYLE_OPTION_BASE + index, StyleDisplayName(IntToStyle(index)));
+    }
+
+    RECT buttonRect{};
+    GetWindowRect(styleButton_, &buttonRect);
+    SetForegroundWindow(hwnd_);
+    const int command = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_RETURNCMD | TPM_TOPALIGN | TPM_NONOTIFY, buttonRect.left, buttonRect.bottom + 4, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
+
+    if (command >= ID_STYLE_OPTION_BASE && command < ID_STYLE_OPTION_BASE + kCrosshairStyleCount)
+    {
+        Settings updated = CopySettings();
+        SwitchStyleProfile(updated, IntToStyle(command - ID_STYLE_OPTION_BASE));
+        app_->ApplySettings(updated);
     }
 }
 

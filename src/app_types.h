@@ -15,6 +15,8 @@ enum class CrosshairStyle
     TShape = 3,
 };
 
+inline constexpr int kCrosshairStyleCount = static_cast<int>(CrosshairStyle::TShape) + 1;
+
 enum class RenderMode
 {
     BuiltIn = 0,
@@ -37,20 +39,69 @@ struct ColorPreset
     BYTE blue;
 };
 
+struct CrosshairProfile
+{
+    int length = 22;
+    int gap = 7;
+    int thickness = 3;
+    int opacity = 220;
+    int rotation = 0;
+    int colorIndex = 0;
+    COLORREF customColor = RGB(0, 255, 0);
+    bool useCustomColor = false;
+    bool middleDot = false;
+    bool outlineEnabled = true;
+};
+
+inline CrosshairProfile MakeDefaultCrosshairProfile(const CrosshairStyle style)
+{
+    CrosshairProfile profile{};
+    switch (style)
+    {
+    case CrosshairStyle::Dot:
+        profile.length = 10;
+        profile.gap = 0;
+        profile.thickness = 4;
+        break;
+    case CrosshairStyle::Circle:
+        profile.length = 16;
+        profile.gap = 0;
+        break;
+    case CrosshairStyle::TShape:
+        profile.length = 20;
+        profile.gap = 6;
+        break;
+    case CrosshairStyle::Cross:
+    default:
+        break;
+    }
+
+    return profile;
+}
+
 struct Settings
 {
     int length = 22;
     int gap = 7;
     int thickness = 3;
     int opacity = 220;
+    int rotation = 0;
     int colorIndex = 0;
     CrosshairStyle style = CrosshairStyle::Cross;
     bool visible = true;
+    bool middleDot = false;
+    bool outlineEnabled = true;
     RenderMode renderMode = RenderMode::BuiltIn;
     COLORREF customColor = RGB(0, 255, 0);
     bool useCustomColor = false;
     std::wstring customImagePath;
     int imageSize = 96;
+    std::array<CrosshairProfile, kCrosshairStyleCount> styleProfiles = {{
+        MakeDefaultCrosshairProfile(CrosshairStyle::Cross),
+        MakeDefaultCrosshairProfile(CrosshairStyle::Dot),
+        MakeDefaultCrosshairProfile(CrosshairStyle::Circle),
+        MakeDefaultCrosshairProfile(CrosshairStyle::TShape),
+    }};
 };
 
 inline constexpr wchar_t kAppName[] = L"Potato Crosshair";
@@ -95,8 +146,81 @@ inline int StyleToInt(const CrosshairStyle style)
 
 inline CrosshairStyle IntToStyle(int value)
 {
-    value = ClampInt(value, 0, static_cast<int>(CrosshairStyle::TShape));
+    value = ClampInt(value, 0, kCrosshairStyleCount - 1);
     return static_cast<CrosshairStyle>(value);
+}
+
+inline CrosshairProfile CaptureCrosshairProfile(const Settings& settings)
+{
+    CrosshairProfile profile{};
+    profile.length = settings.length;
+    profile.gap = settings.gap;
+    profile.thickness = settings.thickness;
+    profile.opacity = settings.opacity;
+    profile.rotation = settings.rotation;
+    profile.colorIndex = settings.colorIndex;
+    profile.customColor = settings.customColor;
+    profile.useCustomColor = settings.useCustomColor;
+    profile.middleDot = settings.middleDot;
+    profile.outlineEnabled = settings.outlineEnabled;
+    return profile;
+}
+
+inline void ApplyCrosshairProfile(Settings& settings, const CrosshairProfile& profile)
+{
+    settings.length = profile.length;
+    settings.gap = profile.gap;
+    settings.thickness = profile.thickness;
+    settings.opacity = profile.opacity;
+    settings.rotation = profile.rotation;
+    settings.colorIndex = profile.colorIndex;
+    settings.customColor = profile.customColor;
+    settings.useCustomColor = profile.useCustomColor;
+    settings.middleDot = profile.middleDot;
+    settings.outlineEnabled = profile.outlineEnabled;
+}
+
+inline CrosshairProfile& GetCrosshairProfile(Settings& settings, const CrosshairStyle style)
+{
+    return settings.styleProfiles[static_cast<size_t>(StyleToInt(style))];
+}
+
+inline const CrosshairProfile& GetCrosshairProfile(const Settings& settings, const CrosshairStyle style)
+{
+    return settings.styleProfiles[static_cast<size_t>(StyleToInt(style))];
+}
+
+inline void SyncCurrentStyleProfile(Settings& settings)
+{
+    GetCrosshairProfile(settings, settings.style) = CaptureCrosshairProfile(settings);
+}
+
+inline void LoadStyleProfile(Settings& settings, const CrosshairStyle style)
+{
+    settings.style = style;
+    ApplyCrosshairProfile(settings, GetCrosshairProfile(settings, style));
+}
+
+inline void SwitchStyleProfile(Settings& settings, const CrosshairStyle style)
+{
+    SyncCurrentStyleProfile(settings);
+    LoadStyleProfile(settings, style);
+}
+
+inline const wchar_t* StyleDisplayName(const CrosshairStyle style)
+{
+    switch (style)
+    {
+    case CrosshairStyle::Cross:
+        return L"Cross";
+    case CrosshairStyle::Dot:
+        return L"Dot";
+    case CrosshairStyle::Circle:
+        return L"Circle";
+    case CrosshairStyle::TShape:
+    default:
+        return L"T-Shape";
+    }
 }
 
 inline int RenderModeToInt(const RenderMode mode)

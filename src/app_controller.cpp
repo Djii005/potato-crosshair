@@ -97,6 +97,7 @@ void AppController::ApplySettings(const Settings& settings, const bool saveChang
     sanitized.gap = ClampInt(sanitized.gap, 0, 80);
     sanitized.thickness = ClampInt(sanitized.thickness, 1, 20);
     sanitized.opacity = ClampInt(sanitized.opacity, 40, 255);
+    sanitized.rotation = ClampInt(sanitized.rotation, 0, 359);
     sanitized.colorIndex = ClampInt(sanitized.colorIndex, 0, static_cast<int>(kColorPresets.size()) - 1);
     sanitized.imageSize = ClampInt(sanitized.imageSize, 16, 512);
 
@@ -104,6 +105,8 @@ void AppController::ApplySettings(const Settings& settings, const bool saveChang
     {
         sanitized.renderMode = RenderMode::BuiltIn;
     }
+
+    SyncCurrentStyleProfile(sanitized);
 
     settings_ = sanitized;
 

@@ -1,10 +1,12 @@
 #include "crosshair_renderer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 using Gdiplus::Color;
 using Gdiplus::Graphics;
+using Gdiplus::GraphicsState;
 using Gdiplus::Image;
 using Gdiplus::ImageAttributes;
 using Gdiplus::LineCapRound;
@@ -19,6 +21,20 @@ namespace
 Color MakeColor(const COLORREF color, const BYTE alpha)
 {
     return Color(alpha, GetRValue(color), GetGValue(color), GetBValue(color));
+}
+
+void DrawCenterDot(Graphics& graphics, const float radius, const Color& color, const BYTE alpha, const bool outlineEnabled)
+{
+    if (outlineEnabled)
+    {
+        SolidBrush outlineBrush(Color(alpha, 0, 0, 0));
+        const RectF outlineRect(-radius - 1.5F, -radius - 1.5F, (radius + 1.5F) * 2.0F, (radius + 1.5F) * 2.0F);
+        graphics.FillEllipse(&outlineBrush, outlineRect);
+    }
+
+    SolidBrush fillBrush(color);
+    const RectF fillRect(-radius, -radius, radius * 2.0F, radius * 2.0F);
+    graphics.FillEllipse(&fillBrush, fillRect);
 }
 
 bool TryDrawCustomImage(Graphics& graphics, const Settings& settings, const RectF& bounds)
@@ -78,6 +94,7 @@ void DrawBuiltInCrosshair(Graphics& graphics, const Settings& settings, const Re
     const float gap = static_cast<float>(ClampInt(settings.gap, 0, 80));
     const float dotRadius = std::max(2.0F, thickness * 1.15F);
     const float circleRadius = armLength;
+    const bool outlineEnabled = settings.outlineEnabled;
 
     Pen outlinePen(Color(alpha, 0, 0, 0), thickness + 2.0F);
     outlinePen.SetStartCap(LineCapRound);
@@ -87,43 +104,53 @@ void DrawBuiltInCrosshair(Graphics& graphics, const Settings& settings, const Re
     mainPen.SetStartCap(LineCapRound);
     mainPen.SetEndCap(LineCapRound);
 
+    const GraphicsState state = graphics.Save();
+    graphics.TranslateTransform(centerX, centerY);
+    graphics.RotateTransform(static_cast<Gdiplus::REAL>(ClampInt(settings.rotation, 0, 359)));
+
     auto drawLine = [&](const float x1, const float y1, const float x2, const float y2)
     {
-        graphics.DrawLine(&outlinePen, x1, y1, x2, y2);
+        if (outlineEnabled)
+        {
+            graphics.DrawLine(&outlinePen, x1, y1, x2, y2);
+        }
         graphics.DrawLine(&mainPen, x1, y1, x2, y2);
     };
 
     switch (settings.style)
     {
     case CrosshairStyle::Cross:
-        drawLine(centerX - gap, centerY, centerX - gap - armLength, centerY);
-        drawLine(centerX + gap, centerY, centerX + gap + armLength, centerY);
-        drawLine(centerX, centerY - gap, centerX, centerY - gap - armLength);
-        drawLine(centerX, centerY + gap, centerX, centerY + gap + armLength);
+        drawLine(-gap, 0.0F, -gap - armLength, 0.0F);
+        drawLine(gap, 0.0F, gap + armLength, 0.0F);
+        drawLine(0.0F, -gap, 0.0F, -gap - armLength);
+        drawLine(0.0F, gap, 0.0F, gap + armLength);
         break;
 
     case CrosshairStyle::Dot:
-    {
-        SolidBrush outlineBrush(Color(alpha, 0, 0, 0));
-        SolidBrush fillBrush(MakeColor(effectiveColor, alpha));
-        const RectF outlineRect(centerX - dotRadius - 1.5F, centerY - dotRadius - 1.5F, (dotRadius + 1.5F) * 2.0F, (dotRadius + 1.5F) * 2.0F);
-        const RectF fillRect(centerX - dotRadius, centerY - dotRadius, dotRadius * 2.0F, dotRadius * 2.0F);
-        graphics.FillEllipse(&outlineBrush, outlineRect);
-        graphics.FillEllipse(&fillBrush, fillRect);
+        DrawCenterDot(graphics, dotRadius, MakeColor(effectiveColor, alpha), alpha, outlineEnabled);
         break;
-    }
 
     case CrosshairStyle::Circle:
-        graphics.DrawEllipse(&outlinePen, centerX - circleRadius, centerY - circleRadius, circleRadius * 2.0F, circleRadius * 2.0F);
-        graphics.DrawEllipse(&mainPen, centerX - circleRadius, centerY - circleRadius, circleRadius * 2.0F, circleRadius * 2.0F);
+        if (outlineEnabled)
+        {
+            graphics.DrawEllipse(&outlinePen, -circleRadius, -circleRadius, circleRadius * 2.0F, circleRadius * 2.0F);
+        }
+        graphics.DrawEllipse(&mainPen, -circleRadius, -circleRadius, circleRadius * 2.0F, circleRadius * 2.0F);
         break;
 
     case CrosshairStyle::TShape:
-        drawLine(centerX - gap, centerY, centerX - gap - armLength, centerY);
-        drawLine(centerX + gap, centerY, centerX + gap + armLength, centerY);
-        drawLine(centerX, centerY + gap, centerX, centerY + gap + armLength);
+        drawLine(-gap, 0.0F, -gap - armLength, 0.0F);
+        drawLine(gap, 0.0F, gap + armLength, 0.0F);
+        drawLine(0.0F, gap, 0.0F, gap + armLength);
         break;
     }
+
+    if (settings.middleDot && settings.style != CrosshairStyle::Dot)
+    {
+        DrawCenterDot(graphics, dotRadius, MakeColor(effectiveColor, alpha), alpha, outlineEnabled);
+    }
+
+    graphics.Restore(state);
 }
 } // namespace
 
@@ -144,11 +171,21 @@ int CalculateOverlayWindowSize(const Settings& settings)
         return std::max(96, ClampInt(settings.imageSize, 16, 512) + 24);
     }
 
-    const int armExtent = settings.gap + settings.length + settings.thickness;
-    const int circleExtent = settings.length + settings.thickness + 10;
-    const int dotExtent = (settings.thickness * 3) + 8;
-    const int maxExtent = std::max({armExtent, circleExtent, dotExtent});
-    return std::max(96, (maxExtent * 2) + 24);
+    const float outlinePadding = settings.outlineEnabled ? 2.0F : 0.0F;
+    const float armExtent = static_cast<float>(settings.gap + settings.length) + static_cast<float>(settings.thickness) + outlinePadding;
+    const float circleExtent = static_cast<float>(settings.length) + static_cast<float>(settings.thickness) + outlinePadding + 10.0F;
+    const float dotExtent = static_cast<float>(settings.thickness * 3) + outlinePadding + 8.0F;
+    const float centerDotExtent = settings.middleDot ? dotExtent : 0.0F;
+    const float maxExtent = std::max({armExtent, circleExtent, dotExtent, centerDotExtent});
+
+    float rotationScale = 1.0F;
+    if (settings.style == CrosshairStyle::Cross || settings.style == CrosshairStyle::TShape)
+    {
+        const double radians = static_cast<double>(ClampInt(settings.rotation, 0, 359)) * 3.14159265358979323846 / 180.0;
+        rotationScale = static_cast<float>(std::abs(std::cos(radians)) + std::abs(std::sin(radians)));
+    }
+
+    return std::max(96, static_cast<int>(std::ceil((maxExtent * 2.0F * rotationScale) + 24.0F)));
 }
 
 void DrawCrosshair(Graphics& graphics, const Settings& settings, const RectF& bounds)
